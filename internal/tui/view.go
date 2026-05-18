@@ -347,18 +347,17 @@ func (m Model) renderDetails(width int) string {
 		hdr.WriteString(m.styles.title.Render("Message:") + "\n")
 		hdr.WriteString(indent(r.commit.Message(), "  ") + "\n")
 	}
-	if files := m.filesCache[r.commit.SHA]; files != nil {
+	if files, ok := m.filesCache[r.commit.SHA]; ok {
 		hdr.WriteString("\n")
 		hdr.WriteString(m.styles.title.Render(fmt.Sprintf("Files (%d):", len(files))) + "\n")
 		hdr.WriteString(renderFileTree(files, m.styles) + "\n")
 	} else if m.loadFiles != nil {
-		files, err := m.loadFiles(r.commit.SHA)
-		if err == nil {
-			m.filesCache[r.commit.SHA] = files
-			hdr.WriteString("\n")
-			hdr.WriteString(m.styles.title.Render(fmt.Sprintf("Files (%d):", len(files))) + "\n")
-			hdr.WriteString(renderFileTree(files, m.styles) + "\n")
-		}
+		// File list not loaded yet — show a placeholder. The async load
+		// is kicked off from Update on cursor-move; we never shell out to
+		// git from View(), since View runs synchronously on every render
+		// (including for every mouse-motion event).
+		hdr.WriteString("\n")
+		hdr.WriteString(m.styles.help.Render("Files: loading…") + "\n")
 	}
 	hdr.WriteString("\n")
 	headerStr := hdr.String()

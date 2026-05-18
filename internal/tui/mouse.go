@@ -53,7 +53,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 				m.ensureCursorVisible()
 				m.resetDiffViewport()
 			}
-			return m, m.loadDiffCmd()
+			return m, m.loadCommitCmd()
 		}
 	case tea.MouseButtonWheelDown:
 		switch zone {
@@ -65,7 +65,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 				m.ensureCursorVisible()
 				m.resetDiffViewport()
 			}
-			return m, m.loadDiffCmd()
+			return m, m.loadCommitCmd()
 		}
 	case tea.MouseButtonLeft:
 		if msg.Action != tea.MouseActionPress {
@@ -83,7 +83,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 					m.cursor = idx
 					m.ensureCursorVisible()
 					m.resetDiffViewport()
-					return m, m.loadDiffCmd()
+					return m, m.loadCommitCmd()
 				}
 			}
 		case zoneRight:

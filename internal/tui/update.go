@@ -12,6 +12,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// filesLoadedMsg is dispatched when an async file-list load finishes. The
+// cache is keyed by SHA so cursor moves that revisit a commit don't reload.
+type filesLoadedMsg struct {
+	sha   string
+	files []git.FileStat
+	err   error
+}
+
 // rewordMsg carries the result of running $EDITOR to capture a multi-line
 // reword message.
 type rewordMsg struct {
@@ -62,7 +70,7 @@ func rewordCmd(idx int, initial string) tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		return m.handleResize(msg), m.loadDiffCmd()
+		return m.handleResize(msg), m.loadCommitCmd()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	case tea.MouseMsg:
@@ -70,6 +78,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m2, cmd
 	case diffLoadedMsg:
 		return m.handleDiffLoaded(msg), nil
+	case filesLoadedMsg:
+		if msg.err == nil && msg.sha != "" {
+			m.filesCache[msg.sha] = msg.files
+		}
+		return m, nil
 	case rewordMsg:
 		if msg.err != nil {
 			m.status = fmt.Sprintf("reword failed: %v", msg.err)
@@ -217,7 +230,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.ensureCursorVisible()
 			m.resetDiffViewport()
 		}
-		return m, m.loadDiffCmd()
+		return m, m.loadCommitCmd()
 	case key.Matches(msg, m.keys.Down):
 		if m.focus == 1 {
 			m.diff.LineDown(1)
@@ -228,7 +241,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.ensureCursorVisible()
 			m.resetDiffViewport()
 		}
-		return m, m.loadDiffCmd()
+		return m, m.loadCommitCmd()
 	case key.Matches(msg, m.keys.Top):
 		if m.focus == 1 {
 			m.diff.GotoTop()
@@ -239,7 +252,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.ensureCursorVisible()
 			m.resetDiffViewport()
 		}
-		return m, m.loadDiffCmd()
+		return m, m.loadCommitCmd()
 	case key.Matches(msg, m.keys.Bottom):
 		if m.focus == 1 {
 			m.diff.GotoBottom()
@@ -250,7 +263,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.ensureCursorVisible()
 			m.resetDiffViewport()
 		}
-		return m, m.loadDiffCmd()
+		return m, m.loadCommitCmd()
 
 	case key.Matches(msg, m.keys.MoveUp):
 		if m.cursor > 0 && !m.isWorkingRow(m.cursor) && !m.isWorkingRow(m.cursor-1) {
@@ -320,7 +333,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.ensureCursorVisible()
 		m.resetDiffViewport()
-		return m, m.loadDiffCmd()
+		return m, m.loadCommitCmd()
 	case key.Matches(msg, m.keys.PageDown):
 		if m.focus == 1 {
 			m.diff.HalfViewDown()
@@ -336,7 +349,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.ensureCursorVisible()
 		m.resetDiffViewport()
-		return m, m.loadDiffCmd()
+		return m, m.loadCommitCmd()
 	}
 
 	return m, nil
@@ -471,6 +484,31 @@ func (m Model) loadDiffCmd() tea.Cmd {
 		}
 		return diffLoadedMsg{sha: sha, content: out}
 	}
+}
+
+// loadFilesCmd fetches the file list for the commit under the cursor when
+// it's not already cached. Runs the git shell-out off the render path so
+// View() stays non-blocking even on first visit to a commit.
+func (m Model) loadFilesCmd() tea.Cmd {
+	if len(m.rows) == 0 || m.loadFiles == nil {
+		return nil
+	}
+	sha := m.rows[m.cursor].commit.SHA
+	if _, ok := m.filesCache[sha]; ok {
+		return nil
+	}
+	loadFiles := m.loadFiles
+	return func() tea.Msg {
+		out, err := loadFiles(sha)
+		return filesLoadedMsg{sha: sha, files: out, err: err}
+	}
+}
+
+// loadCommitCmd batches the diff and files loads triggered by a cursor
+// move (or initial layout). tea.Batch runs them concurrently, so the
+// faster one paints first.
+func (m Model) loadCommitCmd() tea.Cmd {
+	return tea.Batch(m.loadDiffCmd(), m.loadFilesCmd())
 }
 
 type diffLoadedMsg struct {
