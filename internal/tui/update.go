@@ -65,6 +65,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleResize(msg), m.loadDiffCmd()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+	case tea.MouseMsg:
+		m2, cmd := m.handleMouse(msg)
+		return m2, cmd
 	case diffLoadedMsg:
 		return m.handleDiffLoaded(msg), nil
 	case rewordMsg:
