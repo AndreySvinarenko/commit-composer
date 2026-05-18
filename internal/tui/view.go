@@ -10,6 +10,7 @@ import (
 	"github.com/mrcat71/commit-composer/internal/git"
 	"github.com/mrcat71/commit-composer/internal/plan"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const (
@@ -589,26 +590,28 @@ func overlay(base, top string, w, h int) string {
 	return strings.Join(bg, "\n")
 }
 
-// pasteAt overwrites `dst` starting at column `col` with `src`. Both are
-// expected to be ANSI-stripped or simple text; we use visible width.
+// pasteAt overwrites `dst` starting at visible column `col` with `src`.
+// dst is expected to contain ANSI escape sequences (styled lipgloss output);
+// we slice it by visible width via ansi.Truncate / ansi.TruncateLeft so we
+// never cut in the middle of a `\x1b[...m` sequence. Cutting mid-sequence
+// would leave garbled fragments like `;2;213;137;95m` rendered as literal
+// text on the screen.
+//
+// Resets (`\x1b[0m`) bracket `src` so any style left open by the left chunk
+// or carried forward into the right chunk doesn't bleed into the overlay.
 func pasteAt(dst, src string, col int) string {
+	const reset = "\x1b[0m"
 	dw := lipgloss.Width(dst)
 	if col >= dw {
-		return dst + strings.Repeat(" ", col-dw) + src
+		return dst + reset + strings.Repeat(" ", col-dw) + src + reset
 	}
-	// Simple slicing on runes (modal won't span complex ANSI in dst at the
-	// paste region for the layouts we render).
-	rDst := []rune(dst)
-	rSrc := []rune(src)
-	if col+len(rSrc) > len(rDst) {
-		out := append([]rune{}, rDst[:col]...)
-		out = append(out, rSrc...)
-		return string(out)
+	sw := lipgloss.Width(src)
+	left := ansi.Truncate(dst, col, "")
+	if col+sw >= dw {
+		return left + reset + src + reset
 	}
-	out := append([]rune{}, rDst[:col]...)
-	out = append(out, rSrc...)
-	out = append(out, rDst[col+len(rSrc):]...)
-	return string(out)
+	right := ansi.TruncateLeft(dst, col+sw, "")
+	return left + reset + src + reset + right
 }
 
 // colorizeDiff applies foreground colors to a unified diff for the right
