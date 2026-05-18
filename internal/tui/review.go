@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // ProposalPool is one pool's proposal, mirroring the on-disk SplitSpec but
@@ -27,8 +28,13 @@ type ProposalPool struct {
 }
 
 // ProposalGroup is one virtual commit in a proposal.
+//
+// Files is the legacy file-level scope. Hunks is the line-level scope; when
+// non-empty the apply step uses only the indexed hunks of the pool's diff,
+// ignoring Files entirely.
 type ProposalGroup struct {
 	Files   []string `json:"files"`
+	Hunks   []int    `json:"hunks,omitempty"`
 	Message string   `json:"message"`
 	Comment string   `json:"comment,omitempty"` // populated when user leaves a note
 }
@@ -57,11 +63,12 @@ type reviewRow struct {
 	gIdx int
 
 	files       []string
+	hunks       []int // indices into the pool's hunk list (line-level scope)
 	message     string
-	origMessage string  // for change detection
+	origMessage string // for change detection
 	comment     string
-	dropped     bool    // d: merged into the previous group within pool
-	squashed    bool    // s: same as dropped but keeps a marker in message
+	dropped     bool // d: merged into the previous group within pool
+	squashed    bool // s: same as dropped but keeps a marker in message
 }
 
 // ReviewModel renders the proposal-review TUI.
@@ -72,9 +79,16 @@ type ReviewModel struct {
 	cursor     int
 	listOffset int
 
+	// focus: 0 = proposal list (left), 1 = diff viewport (right). Tab cycles.
+	focus int
+
 	width  int
 	height int
 	diff   viewport.Model
+	// diffCache is keyed by poolSHA + "\x00" + strings.Join(files, "\x00")
+	// so adjacent groups touching the same files do not re-shell out to git.
+	diffCache  map[string]string
+	currentKey string // cache key currently rendered in the diff viewport
 
 	keys   reviewKeymap
 	styles styles
@@ -82,6 +96,10 @@ type ReviewModel struct {
 	cancelled bool
 	status    string
 	statusErr bool
+
+	// loadDiff returns the unified-diff text for the given pool and file set.
+	// Wired by the cmd entry point; nil keeps the diff pane empty.
+	loadDiff func(poolSHA string, poolSize int, files []string) (string, error)
 
 	// repoDir lets us resolve original SHAs to diffs if the user wants to
 	// see what a proposed group's files actually look like in HEAD~.
@@ -100,6 +118,8 @@ type reviewKeymap struct {
 	Squash  key.Binding
 	Drop    key.Binding
 	Comment key.Binding
+
+	Focus key.Binding
 
 	Confirm key.Binding
 	Cancel  key.Binding
@@ -120,6 +140,8 @@ func newReviewKeymap() reviewKeymap {
 		Drop:    key.NewBinding(key.WithKeys("d")),
 		Comment: key.NewBinding(key.WithKeys("m")),
 
+		Focus: key.NewBinding(key.WithKeys("tab", "shift+tab")),
+
 		Confirm: key.NewBinding(key.WithKeys("enter")),
 		Cancel:  key.NewBinding(key.WithKeys("q", "ctrl+c", "esc")),
 		Help:    key.NewBinding(key.WithKeys("?")),
@@ -130,6 +152,10 @@ func newReviewKeymap() reviewKeymap {
 type ReviewOptions struct {
 	Pools   []ProposalPool
 	RepoDir string
+	// LoadDiff is called lazily when the cursor moves to a row whose
+	// (pool, files) combination has not been seen yet. Returns the unified
+	// diff body. nil means the right pane just shows metadata, no diff.
+	LoadDiff func(poolSHA string, poolSize int, files []string) (string, error)
 }
 
 // NewReview builds the model from a list of pools.
@@ -141,6 +167,7 @@ func NewReview(opts ReviewOptions) ReviewModel {
 				poolIdx:     pi,
 				gIdx:        gi,
 				files:       append([]string(nil), g.Files...),
+				hunks:       append([]int(nil), g.Hunks...),
 				message:     g.Message,
 				origMessage: g.Message,
 				comment:     g.Comment,
@@ -149,12 +176,14 @@ func NewReview(opts ReviewOptions) ReviewModel {
 	}
 	vp := viewport.New(40, 10)
 	return ReviewModel{
-		pools:   opts.Pools,
-		rows:    rows,
-		diff:    vp,
-		keys:    newReviewKeymap(),
-		styles:  newStyles(),
-		repoDir: opts.RepoDir,
+		pools:     opts.Pools,
+		rows:      rows,
+		diff:      vp,
+		diffCache: make(map[string]string),
+		loadDiff:  opts.LoadDiff,
+		keys:      newReviewKeymap(),
+		styles:    newStyles(),
+		repoDir:   opts.RepoDir,
 	}
 }
 
@@ -196,6 +225,7 @@ func (m ReviewModel) RevisedPools() []ProposalPool {
 		}
 		g := ProposalGroup{
 			Files:   append([]string(nil), r.files...),
+			Hunks:   append([]int(nil), r.hunks...),
 			Message: r.message,
 			Comment: r.comment,
 		}
@@ -236,6 +266,7 @@ func (m ReviewModel) RevisedPools() []ProposalPool {
 			continue
 		}
 		target.Files = append(target.Files, r.files...)
+		target.Hunks = append(target.Hunks, r.hunks...)
 		if r.squashed && strings.TrimSpace(r.message) != "" {
 			target.Message = strings.TrimRight(target.Message, "\n") + "\n\n" + r.message
 		}
@@ -282,9 +313,12 @@ func (m ReviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		return m, nil
+		return m, m.maybeLoadDiff()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+	case tea.MouseMsg:
+		m2, cmd := m.handleMouse(msg)
+		return m2, cmd
 	case reviewRewordMsg:
 		if msg.err != nil {
 			m.status = fmt.Sprintf("reword failed: %v", msg.err)
@@ -306,6 +340,18 @@ func (m ReviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusErr = false
 		}
 		return m, nil
+	case reviewDiffLoadedMsg:
+		key := msg.key
+		if msg.err != nil {
+			m.diffCache[key] = fmt.Sprintf("(could not load diff: %v)", msg.err)
+		} else {
+			m.diffCache[key] = msg.diff
+		}
+		if key == m.currentKey {
+			m.diff.SetContent(colorizeDiff(m.diffCache[key], m.styles))
+			m.diff.GotoTop()
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -317,17 +363,50 @@ func (m ReviewModel) handleKey(msg tea.KeyMsg) (ReviewModel, tea.Cmd) {
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Confirm):
 		return m, tea.Quit
+	case key.Matches(msg, m.keys.Focus):
+		if m.focus == 0 {
+			m.focus = 1
+		} else {
+			m.focus = 0
+		}
+		return m, nil
 	case key.Matches(msg, m.keys.Up):
+		if m.focus == 1 {
+			m.diff.LineUp(1)
+			return m, nil
+		}
 		if m.cursor > 0 {
 			m.cursor--
 		}
 	case key.Matches(msg, m.keys.Down):
+		if m.focus == 1 {
+			m.diff.LineDown(1)
+			return m, nil
+		}
 		if m.cursor < len(m.rows)-1 {
 			m.cursor++
 		}
+	case key.Matches(msg, m.keys.PageUp):
+		if m.focus == 1 {
+			m.diff.HalfViewUp()
+			return m, nil
+		}
+	case key.Matches(msg, m.keys.PageDown):
+		if m.focus == 1 {
+			m.diff.HalfViewDown()
+			return m, nil
+		}
 	case key.Matches(msg, m.keys.Top):
+		if m.focus == 1 {
+			m.diff.GotoTop()
+			return m, nil
+		}
 		m.cursor = 0
 	case key.Matches(msg, m.keys.Bottom):
+		if m.focus == 1 {
+			m.diff.GotoBottom()
+			return m, nil
+		}
 		if len(m.rows) > 0 {
 			m.cursor = len(m.rows) - 1
 		}
@@ -349,7 +428,91 @@ func (m ReviewModel) handleKey(msg tea.KeyMsg) (ReviewModel, tea.Cmd) {
 			m = m.applyDrop()
 		}
 	}
-	return m, nil
+	return m, m.maybeLoadDiff()
+}
+
+// reviewDiffLoadedMsg is dispatched when the async diff load completes.
+type reviewDiffLoadedMsg struct {
+	key  string
+	diff string
+	err  error
+}
+
+// diffKey computes the cache key for the current cursor row. Hunks are
+// folded in so two groups that touch the same files but different hunks
+// each cache their own slice of the diff.
+func (m ReviewModel) diffKey() string {
+	if len(m.rows) == 0 {
+		return ""
+	}
+	r := m.rows[m.cursor]
+	pool := m.pools[r.poolIdx]
+	files := append([]string(nil), r.files...)
+	for i := 1; i < len(files); i++ {
+		for j := i; j > 0 && files[j-1] > files[j]; j-- {
+			files[j-1], files[j] = files[j], files[j-1]
+		}
+	}
+	hunks := append([]int(nil), r.hunks...)
+	for i := 1; i < len(hunks); i++ {
+		for j := i; j > 0 && hunks[j-1] > hunks[j]; j-- {
+			hunks[j-1], hunks[j] = hunks[j], hunks[j-1]
+		}
+	}
+	hunkParts := make([]string, len(hunks))
+	for i, h := range hunks {
+		hunkParts[i] = fmt.Sprintf("%d", h)
+	}
+	return pool.SHA + "\x00f:" + strings.Join(files, "\x00") + "\x00h:" + strings.Join(hunkParts, ",")
+}
+
+// maybeLoadDiff returns a Cmd that fetches the diff for the current row if
+// not yet cached. If cached, it just sets the viewport content. If no
+// loadDiff is wired, this is a no-op.
+func (m *ReviewModel) maybeLoadDiff() tea.Cmd {
+	if m.loadDiff == nil || len(m.rows) == 0 {
+		return nil
+	}
+	key := m.diffKey()
+	if key == "" {
+		return nil
+	}
+	m.currentKey = key
+	if cached, ok := m.diffCache[key]; ok {
+		m.diff.SetContent(colorizeDiff(cached, m.styles))
+		return nil
+	}
+	m.diff.SetContent(m.styles.subjectMuted.Render("(loading diff…)"))
+	r := m.rows[m.cursor]
+	pool := m.pools[r.poolIdx]
+	files := append([]string(nil), r.files...)
+	hunks := append([]int(nil), r.hunks...)
+	loadDiff := m.loadDiff
+	return func() tea.Msg {
+		out, err := loadDiff(pool.SHA, pool.PoolSize, files)
+		if err == nil && len(hunks) > 0 {
+			out = sliceDiffByHunks(out, hunks)
+		}
+		return reviewDiffLoadedMsg{key: key, diff: out, err: err}
+	}
+}
+
+// sliceDiffByHunks parses diff, picks only the indexed hunks, and re-emits a
+// valid patch. Used so the review pane shows just the lines that belong to
+// the current proposed commit when the group has line-level scope.
+func sliceDiffByHunks(diff string, indices []int) string {
+	hs, err := git.ParseHunks(diff)
+	if err != nil || len(hs) == 0 {
+		return diff
+	}
+	picked := make([]git.Hunk, 0, len(indices))
+	for _, i := range indices {
+		if i < 0 || i >= len(hs) {
+			continue
+		}
+		picked = append(picked, hs[i])
+	}
+	return git.BuildPatch(picked)
 }
 
 func (m ReviewModel) commentTemplate(i int) string {
@@ -492,16 +655,52 @@ func (m ReviewModel) View() string {
 		leftW = 30
 	}
 	rightW := m.width - leftW
-	bodyH := m.height - 2
+	bodyH := m.height - 3 // status bar + help line + status line
 	if bodyH < 6 {
 		bodyH = 6
 	}
 	left := m.renderProposalList(leftW, bodyH)
 	right := m.renderRowDetail(rightW, bodyH)
-	leftPane := m.styles.pane.Width(leftW).Height(bodyH).Render(left)
-	rightPane := m.styles.pane.Width(rightW).Height(bodyH).Render(right)
+	leftStyle := m.styles.pane
+	rightStyle := m.styles.pane
+	if m.focus == 0 {
+		leftStyle = m.styles.paneFocused
+	} else {
+		rightStyle = m.styles.paneFocused
+	}
+	leftPane := leftStyle.Width(leftW).Height(bodyH).Render(left)
+	rightPane := rightStyle.Width(rightW).Height(bodyH).Render(right)
 	body := joinH(leftPane, rightPane)
-	return joinV(body, m.renderReviewFooter())
+	statusBar := m.renderReviewStatusBar()
+	return joinV(body, statusBar, m.renderReviewFooter())
+}
+
+// renderReviewStatusBar mirrors Model.renderStatusBar for the review TUI.
+func (m ReviewModel) renderReviewStatusBar() string {
+	if len(m.rows) == 0 {
+		return m.styles.statusBar.Width(m.width).Render("")
+	}
+	r := m.rows[m.cursor]
+	pool := m.pools[r.poolIdx]
+	segs := []string{
+		"pool " + short(pool.SHA),
+		fmt.Sprintf("%d/%d", m.cursor+1, len(m.rows)),
+		fmt.Sprintf("%d files", len(r.files)),
+		"state: " + rowState(r),
+	}
+	left := strings.Join(segs, "  │  ")
+	right := "? help"
+	if m.status != "" {
+		right = m.status
+	}
+	leftR := m.styles.statusBar.Render(" " + left + " ")
+	rightR := m.styles.statusBar.Render(" " + right + " ")
+	gap := m.width - widthOf(leftR) - widthOf(rightR)
+	if gap < 1 {
+		gap = 1
+	}
+	mid := m.styles.statusBar.Render(strings.Repeat(" ", gap))
+	return leftR + mid + rightR
 }
 
 func (m ReviewModel) renderProposalList(width, height int) string {
@@ -510,52 +709,84 @@ func (m ReviewModel) renderProposalList(width, height int) string {
 	}
 	var b strings.Builder
 	b.WriteString(m.styles.title.Render(
-		fmt.Sprintf("Proposed commits (%d/%d)  -  review and edit", m.cursor+1, len(m.rows))))
+		fmt.Sprintf("Proposed commits (%d/%d)", m.cursor+1, len(m.rows))))
 	b.WriteByte('\n')
 
-	var curPool int = -1
+	innerW := width - 2
+	if innerW < 10 {
+		innerW = 10
+	}
+	curPool := -1
 	for i, r := range m.rows {
 		if r.poolIdx != curPool {
 			curPool = r.poolIdx
 			pool := m.pools[curPool]
-			b.WriteString(m.styles.metaKey.Render(fmt.Sprintf(
-				"  Pool %s  (%d original commits → %d proposed)",
-				short(pool.SHA), pool.PoolSize, m.activeGroupsInPool(curPool))))
+			// Distinct band: bold accent header on its own line + dim rule.
+			header := fmt.Sprintf("  pool %s  ·  %d → %d",
+				short(pool.SHA), pool.PoolSize, m.activeGroupsInPool(curPool))
+			b.WriteByte('\n')
+			b.WriteString(m.styles.title.Render(header))
+			b.WriteByte('\n')
+			b.WriteString(m.styles.subjectMuted.Render(strings.Repeat("─", innerW)))
 			b.WriteByte('\n')
 		}
-		b.WriteString(m.renderReviewRow(r, i == m.cursor, width-2))
+		b.WriteString(m.renderReviewRow(r, i == m.cursor, innerW))
 		b.WriteByte('\n')
 	}
 	return b.String()
 }
 
-func (m ReviewModel) renderReviewRow(r reviewRow, selected bool, width int) string {
-	cur := "    "
-	if selected {
-		cur = m.styles.cursor.Render("  > ")
-	}
-	var tag string
+// reviewTag returns the single-letter status glyph + a render-only filler
+// space so the column is uniformly 3 chars wide (glyph + padding).
+func (m ReviewModel) reviewTag(r reviewRow) string {
 	switch {
 	case r.dropped:
-		tag = m.styles.tagDrop.Render("drop  ")
+		return m.styles.tagDrop.Render(" D ")
 	case r.squashed:
-		tag = m.styles.tagSquash.Render("squash")
+		return m.styles.tagSquash.Render(" S ")
 	case r.comment != "":
-		tag = m.styles.tagReword.Render("note  ")
+		return m.styles.tagReword.Render(" N ")
 	case r.message != r.origMessage:
-		tag = m.styles.tagReword.Render("reword")
+		return m.styles.tagReword.Render(" R ")
 	default:
-		tag = m.styles.tagPick.Render("keep  ")
+		return m.styles.tagPick.Render(" · ")
 	}
-	subj := truncate(r.message, max(8, width-4-8-1))
+}
+
+func (m ReviewModel) renderReviewRow(r reviewRow, selected bool, width int) string {
+	cur := "  "
+	if selected {
+		cur = m.styles.cursor.Render("▶ ")
+	}
+	tag := m.reviewTag(r)
+	// Layout: cursor(2) + tag(3) + " "(1) + subject(rest)
+	subjBudget := width - 2 - 3 - 1
+	if subjBudget < 4 {
+		subjBudget = 4
+	}
+	subj := truncate(firstLine(r.message), subjBudget)
+	if selected {
+		// Full-width highlight: pad subj to fill remaining width so the
+		// background extends across the row.
+		padded := subj + strings.Repeat(" ", subjBudget-lipgloss.Width(subj))
+		return cur + tag + " " + m.styles.rowSelected.Render(padded)
+	}
 	subjStyle := m.styles.subject
 	if r.dropped || r.squashed {
 		subjStyle = m.styles.subjectMuted
 	}
-	if selected {
-		subjStyle = m.styles.rowSelected
-	}
 	return cur + tag + " " + subjStyle.Render(subj)
+}
+
+// firstLine returns the first non-empty line of s so multiline messages
+// don't blow up the row.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return line
+		}
+	}
+	return s
 }
 
 func (m ReviewModel) activeGroupsInPool(p int) int {
@@ -577,24 +808,40 @@ func (m ReviewModel) renderRowDetail(width, height int) string {
 	}
 	r := m.rows[m.cursor]
 	pool := m.pools[r.poolIdx]
-	var b strings.Builder
-	b.WriteString(m.styles.title.Render("Proposed commit") + "\n")
-	b.WriteString(m.styles.metaKey.Render("Pool:   ") + m.styles.meta.Render(
+	var hdr strings.Builder
+	hdr.WriteString(m.styles.title.Render("Proposed commit") + "\n")
+	hdr.WriteString(m.styles.metaKey.Render("Pool:   ") + m.styles.meta.Render(
 		fmt.Sprintf("%s (%d originals → %d proposed)", short(pool.SHA), pool.PoolSize, m.activeGroupsInPool(r.poolIdx))) + "\n")
-	b.WriteString(m.styles.metaKey.Render("State:  ") + m.styles.meta.Render(rowState(r)) + "\n\n")
+	hdr.WriteString(m.styles.metaKey.Render("State:  ") + m.styles.meta.Render(rowState(r)) + "\n\n")
 
-	b.WriteString(m.styles.title.Render("Message:") + "\n")
-	b.WriteString(indent(r.message, "  ") + "\n\n")
+	hdr.WriteString(m.styles.title.Render("Message:") + "\n")
+	hdr.WriteString(indent(r.message, "  ") + "\n\n")
 
-	b.WriteString(m.styles.title.Render(fmt.Sprintf("Files (%d):", len(r.files))) + "\n")
+	hdr.WriteString(m.styles.title.Render(fmt.Sprintf("Files (%d):", len(r.files))) + "\n")
 	for _, f := range r.files {
-		b.WriteString("  " + f + "\n")
+		hdr.WriteString("  " + f + "\n")
 	}
 	if r.comment != "" {
-		b.WriteString("\n" + m.styles.title.Render("Comment for Claude:") + "\n")
-		b.WriteString(indent(r.comment, "  ") + "\n")
+		hdr.WriteString("\n" + m.styles.title.Render("Comment for Claude:") + "\n")
+		hdr.WriteString(indent(r.comment, "  ") + "\n")
 	}
-	return b.String()
+	hdr.WriteString("\n")
+	hdr.WriteString(m.styles.title.Render("Diff:") + "\n")
+	header := hdr.String()
+	headerLines := strings.Count(header, "\n")
+
+	// Pane content area minus borders = height - 2.
+	paneInner := height - 2
+	diffH := paneInner - headerLines
+	if diffH < 3 {
+		diffH = 3
+	}
+	m.diff.Height = diffH
+	m.diff.Width = width - 4
+	if m.diff.Width < 10 {
+		m.diff.Width = 10
+	}
+	return header + m.diff.View()
 }
 
 func rowState(r reviewRow) string {
@@ -615,7 +862,13 @@ func rowState(r reviewRow) string {
 func (m ReviewModel) renderReviewFooter() string {
 	hk := m.styles.helpKey
 	help := m.styles.help
+	focusHint := "list"
+	if m.focus == 1 {
+		focusHint = "diff"
+	}
 	left := strings.Join([]string{
+		hk.Render("tab") + " " + help.Render("focus("+focusHint+")"),
+		hk.Render("j/k") + " " + help.Render("scroll"),
 		hk.Render("r") + " " + help.Render("reword"),
 		hk.Render("m") + " " + help.Render("comment"),
 		hk.Render("s") + " " + help.Render("squash"),
