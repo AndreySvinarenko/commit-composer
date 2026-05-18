@@ -392,15 +392,46 @@ func (r Repo) Apply(ctx context.Context, p plan.Plan, opts ApplyOptions) error {
 // tree SplitSpec. Unlike executeSplit (which operates after a rebase reset),
 // this just commits the existing working tree contents - no reset, no
 // HEAD~N math.
+//
+// Groups may use either file-level scope (g.Files) or line-level scope
+// (g.Hunks). When any group uses hunks, the full uncommitted diff is parsed
+// once up front so per-group `git apply --cached` calls reference a stable
+// snapshot - mirroring how executeSplit handles real commit pools.
 func (r Repo) executeUncommittedRecompose(ctx context.Context, spec SplitSpec) error {
 	// Unstage everything first so we control which files land in each commit.
 	if _, err := r.Run(ctx, "reset"); err != nil {
 		return fmt.Errorf("git reset (clear index): %w", err)
 	}
+
+	var poolHunks []Hunk
+	wantsHunks := false
+	for _, g := range spec.Groups {
+		if len(g.Hunks) > 0 {
+			wantsHunks = true
+			break
+		}
+	}
+	if wantsHunks {
+		full, err := r.UncommittedDiff(ctx)
+		if err != nil {
+			return fmt.Errorf("recompute uncommitted diff for hunk apply: %w", err)
+		}
+		poolHunks, err = ParseHunks(full)
+		if err != nil {
+			return fmt.Errorf("parse uncommitted diff: %w", err)
+		}
+	}
+
 	for i, g := range spec.Groups {
-		args := append([]string{"add", "--"}, g.Files...)
-		if _, err := r.Run(ctx, args...); err != nil {
-			return fmt.Errorf("git add group %d: %w", i, err)
+		if len(g.Hunks) > 0 {
+			if err := r.applyHunkGroup(ctx, i, g, poolHunks); err != nil {
+				return err
+			}
+		} else {
+			args := append([]string{"add", "--"}, g.Files...)
+			if _, err := r.Run(ctx, args...); err != nil {
+				return fmt.Errorf("git add group %d: %w", i, err)
+			}
 		}
 		if _, err := r.Run(ctx, "commit", "-m", g.Message); err != nil {
 			return fmt.Errorf("git commit group %d: %w", i, err)

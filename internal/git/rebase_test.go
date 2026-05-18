@@ -395,6 +395,102 @@ func TestApplyUncommittedOnly(t *testing.T) {
 	}
 }
 
+// TestApplyUncommittedHunks exercises hunk-level groups for the WORKING
+// pool. Two hunks in the same modified file are split into two commits
+// using SplitGroup.Hunks indices, mirroring the line-level scope that
+// executeSplit already supports for real commit pools.
+func TestApplyUncommittedHunks(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	r := testRepo(t, 1)
+	ctx := context.Background()
+
+	// Seed a tracked file with enough lines that two edits land in
+	// separate hunks (need >6 unchanged lines between them).
+	seed := strings.Join([]string{
+		"line 01", "line 02", "line 03", "line 04", "line 05",
+		"line 06", "line 07", "line 08", "line 09", "line 10",
+		"line 11", "line 12", "line 13", "line 14", "line 15",
+		"line 16", "line 17", "line 18", "line 19", "line 20",
+	}, "\n") + "\n"
+	path := filepath.Join(r.Dir, "data.txt")
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	if _, err := r.Run(ctx, "add", "data.txt"); err != nil {
+		t.Fatalf("git add seed: %v", err)
+	}
+	if _, err := r.Run(ctx, "commit", "-m", "seed"); err != nil {
+		t.Fatalf("git commit seed: %v", err)
+	}
+
+	// Dirty the tree: edit line 2 AND line 19 — gaps wide enough that
+	// `git diff` emits two hunks.
+	lines := strings.Split(strings.TrimRight(seed, "\n"), "\n")
+	lines[1] = "line 02 EDITED-A"
+	lines[18] = "line 19 EDITED-B"
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+
+	// Sanity check: the working diff has at least two hunks we can index.
+	diff, err := r.UncommittedDiff(ctx)
+	if err != nil {
+		t.Fatalf("UncommittedDiff: %v", err)
+	}
+	hs, err := ParseHunks(diff)
+	if err != nil {
+		t.Fatalf("ParseHunks: %v", err)
+	}
+	if len(hs) < 2 {
+		t.Fatalf("expected at least 2 hunks, got %d:\n%s", len(hs), diff)
+	}
+
+	splitsDir := t.TempDir()
+	spec := SplitSpec{
+		SHA: UncommittedSHA,
+		Groups: []SplitGroup{
+			{Hunks: []int{0}, Message: "edit: tweak line 02"},
+			{Hunks: []int{1}, Message: "edit: tweak line 19"},
+		},
+	}
+	specBytes, _ := json.Marshal(spec)
+	if err := os.WriteFile(filepath.Join(splitsDir, UncommittedSHA+".split.json"), specBytes, 0o600); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+
+	headSHA, _ := r.RevParse(ctx, "HEAD")
+	p := plan.Plan{
+		Base: headSHA,
+		Ops:  []plan.Op{{SHA: UncommittedSHA, Action: plan.ClaudeRecompose, OrigIndex: -1}},
+	}
+	self := buildSelf(t)
+	if err := r.Apply(ctx, p, ApplyOptions{
+		SelfExe:   self,
+		SplitsDir: splitsDir,
+		Stdout:    os.Stderr,
+		Stderr:    os.Stderr,
+	}); err != nil {
+		t.Fatalf("Apply uncommitted hunks: %v", err)
+	}
+
+	// History should be: c1, seed, edit A, edit B.
+	logOut, _ := r.Run(ctx, "log", "--reverse", "--format=%s")
+	got := strings.TrimSpace(logOut)
+	want := strings.Join([]string{"c1", "seed", "edit: tweak line 02", "edit: tweak line 19"}, "\n")
+	if got != want {
+		t.Fatalf("post-commit log mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+
+	// Working tree must be clean.
+	clean, _ := r.IsClean(ctx)
+	if !clean {
+		out, _ := r.Run(ctx, "status", "--porcelain")
+		t.Fatalf("expected clean tree, status:\n%s", out)
+	}
+}
+
 func TestApplyClaudeSplitMissingJSONFailsEarly(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
