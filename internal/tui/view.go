@@ -37,12 +37,68 @@ func (m Model) View() string {
 	leftPane := leftStyle.Width(left).Height(m.bodyHeight()).Render(leftBody)
 	rightPane := rightStyle.Width(right).Height(m.bodyHeight()).Render(rightBody)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+	statusBar := m.renderStatusBar()
 	footer := m.renderFooter()
-	out := lipgloss.JoinVertical(lipgloss.Left, body, footer)
+	out := lipgloss.JoinVertical(lipgloss.Left, body, statusBar, footer)
 	if m.showHelp {
 		return overlay(out, m.renderHelp(), m.width, m.height)
 	}
 	return out
+}
+
+// renderStatusBar produces the segmented full-width status bar shown between
+// the body and the help line. Mirrors revdiff's layout: identity on the
+// left, status hint on the right, all on a tinted background.
+func (m Model) renderStatusBar() string {
+	if len(m.rows) == 0 {
+		return m.styles.statusBar.Width(m.width).Render("")
+	}
+	r := m.rows[m.cursor]
+	segs := []string{
+		"⎇ " + r.commit.Short,
+		fmt.Sprintf("%d/%d", m.cursor+1, len(m.rows)),
+		fmt.Sprintf("range %s", m.rangeSpec),
+	}
+	if r.action != plan.Pick {
+		segs = append(segs, "action: "+actionLabel(r.action))
+	}
+	left := strings.Join(segs, "  │  ")
+	right := "? help"
+	if m.status != "" {
+		right = m.status
+	}
+	return m.statusBarRow(left, right)
+}
+
+func (m Model) statusBarRow(left, right string) string {
+	leftR := m.styles.statusBar.Render(" " + left + " ")
+	rightR := m.styles.statusBar.Render(" " + right + " ")
+	gap := m.width - lipgloss.Width(leftR) - lipgloss.Width(rightR)
+	if gap < 1 {
+		gap = 1
+	}
+	mid := m.styles.statusBar.Render(strings.Repeat(" ", gap))
+	return leftR + mid + rightR
+}
+
+func actionLabel(a plan.Action) string {
+	switch a {
+	case plan.Pick:
+		return "pick"
+	case plan.Reword:
+		return "reword"
+	case plan.Squash:
+		return "squash"
+	case plan.Fixup:
+		return "fixup"
+	case plan.Drop:
+		return "drop"
+	case plan.Edit:
+		return "edit"
+	case plan.ClaudeRecompose:
+		return "recompose"
+	}
+	return ""
 }
 
 func (m Model) paneWidths() (int, int) {
@@ -64,7 +120,7 @@ func (m Model) paneWidths() (int, int) {
 }
 
 func (m Model) bodyHeight() int {
-	h := m.height - 2 // reserve 2 lines for footer
+	h := m.height - 3 // reserve 1 line for status bar + 2 for help/status
 	if h < 4 {
 		h = 4
 	}
@@ -556,26 +612,126 @@ func pasteAt(dst, src string, col int) string {
 }
 
 // colorizeDiff applies foreground colors to a unified diff for the right
-// pane. We intentionally use lipgloss styles directly rather than chroma to
-// keep deps small.
+// pane and prefixes every body line with a line-number gutter sourced from
+// the @@ hunk headers (revdiff style).
+//
+//	  12 │ context
+//	+ 13 │ +added line          (new-file line number)
+//	- 12 │ -removed line        (old-file line number)
+//	... ┊ @@ -a,b +c,d @@       (file header / hunk header)
+//
+// We intentionally use lipgloss styles directly rather than chroma so the
+// dependency surface stays small.
 func colorizeDiff(d string, s styles) string {
+	const gutterW = 5
 	var b strings.Builder
+	oldLine, newLine := 0, 0
 	for _, line := range strings.Split(d, "\n") {
 		switch {
 		case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") || strings.HasPrefix(line, "diff "):
+			b.WriteString(s.gutter.Render(padLeft("", gutterW) + " │ "))
 			b.WriteString(s.diffFile.Render(line))
 		case strings.HasPrefix(line, "@@"):
+			o, n := parseHunkHeader(line)
+			if o > 0 {
+				oldLine = o
+			}
+			if n > 0 {
+				newLine = n
+			}
+			b.WriteString(s.gutter.Render(padLeft("…", gutterW) + " │ "))
 			b.WriteString(s.diffHunk.Render(line))
 		case strings.HasPrefix(line, "+"):
+			b.WriteString(s.gutter.Render(padLeft(gutterNum(newLine), gutterW) + " │ "))
 			b.WriteString(s.diffAdd.Render(line))
+			newLine++
 		case strings.HasPrefix(line, "-"):
+			b.WriteString(s.gutter.Render(padLeft(gutterNum(oldLine), gutterW) + " │ "))
 			b.WriteString(s.diffDel.Render(line))
+			oldLine++
+		case line == "":
+			b.WriteByte('\n')
+			continue
 		default:
-			b.WriteString(line)
+			b.WriteString(s.gutter.Render(padLeft(gutterNum(newLine), gutterW) + " │ "))
+			b.WriteString(s.diffContext.Render(line))
+			oldLine++
+			newLine++
 		}
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// parseHunkHeader pulls the starting old and new line numbers out of a unified
+// diff hunk header `@@ -OLD[,n] +NEW[,m] @@`. Returns 0 on parse error so the
+// caller keeps the previous counters.
+func parseHunkHeader(s string) (oldStart, newStart int) {
+	// minimal hand parser - avoids pulling in regexp for one call site.
+	// Locate the '-' that follows "@@ ".
+	i := strings.Index(s, "-")
+	if i < 0 {
+		return 0, 0
+	}
+	rest := s[i+1:]
+	// old range
+	end := indexAny2(rest, ",", " ")
+	if end < 0 {
+		return 0, 0
+	}
+	oldStart = atoi(rest[:end])
+	// find +
+	j := strings.Index(rest, "+")
+	if j < 0 {
+		return oldStart, 0
+	}
+	rest2 := rest[j+1:]
+	end2 := indexAny2(rest2, ",", " ")
+	if end2 < 0 {
+		return oldStart, 0
+	}
+	newStart = atoi(rest2[:end2])
+	return oldStart, newStart
+}
+
+func indexAny2(s, a, b string) int {
+	ia := strings.Index(s, a)
+	ib := strings.Index(s, b)
+	switch {
+	case ia < 0:
+		return ib
+	case ib < 0:
+		return ia
+	case ia < ib:
+		return ia
+	default:
+		return ib
+	}
+}
+
+func atoi(s string) int {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return n
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
+func gutterNum(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+func padLeft(s string, n int) string {
+	if lipgloss.Width(s) >= n {
+		return s
+	}
+	return strings.Repeat(" ", n-lipgloss.Width(s)) + s
 }
 
 func truncate(s string, n int) string {
