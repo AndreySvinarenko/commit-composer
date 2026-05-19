@@ -195,18 +195,44 @@ run_kitty() {
   local sentinel
   sentinel="$(mktemp -t commit-composer-done-XXXXXX)"
   rm -f "$sentinel"
+  # `kitty @ launch` writes the new window id to stdout; swallow it so it
+  # doesn't contaminate our captured plan / review outcome.
   kitty @ --to "${KITTY_LISTEN_ON}" launch \
     --type=overlay --title "$TITLE" --cwd=current \
-    sh -c "$CMD; touch $(printf %q "$sentinel")"
+    sh -c "$CMD; touch $(printf %q "$sentinel")" >/dev/null
   sentinel_wait "$sentinel"
 }
 
+# resolve_wezterm sets WEZTERM_BIN to the wezterm CLI path. WezTerm sets
+# $WEZTERM_PANE in its child shells but does NOT add the CLI to $PATH by
+# default on macOS - the binary lives inside the .app bundle. We probe
+# $PATH first, then the standard bundle location.
+WEZTERM_BIN=""
+resolve_wezterm() {
+  if command -v wezterm >/dev/null 2>&1; then
+    WEZTERM_BIN="$(command -v wezterm)"
+    return 0
+  fi
+  local bundled="/Applications/WezTerm.app/Contents/MacOS/wezterm"
+  if [ -x "$bundled" ]; then
+    WEZTERM_BIN="$bundled"
+    return 0
+  fi
+  return 1
+}
+
 run_wezterm() {
+  if ! resolve_wezterm; then
+    printf 'commit-composer: WezTerm detected (WEZTERM_PANE=%s) but the `wezterm` CLI is not on $PATH and was not found at /Applications/WezTerm.app/Contents/MacOS/wezterm. Install the CLI (or run inside tmux) and retry.\n' "${WEZTERM_PANE:-?}" >&2
+    return 1
+  fi
   local sentinel
   sentinel="$(mktemp -t commit-composer-done-XXXXXX)"
   rm -f "$sentinel"
-  wezterm cli split-pane --bottom --percent 80 --cwd "$CWD" -- \
-    sh -c "$CMD; touch $(printf %q "$sentinel")"
+  # `wezterm cli split-pane` writes the new pane id to stdout; swallow it
+  # so it doesn't get prepended to our captured plan / review outcome.
+  "$WEZTERM_BIN" cli split-pane --bottom --percent 80 --cwd "$CWD" -- \
+    sh -c "$CMD; touch $(printf %q "$sentinel")" >/dev/null
   sentinel_wait "$sentinel"
 }
 
