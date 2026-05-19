@@ -11,20 +11,20 @@ import (
 	"os/exec"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/mrcat71/commit-composer/internal/git"
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // ProposalPool is one pool's proposal, mirroring the on-disk SplitSpec but
 // with comments attached.
 type ProposalPool struct {
-	SHA      string           `json:"sha"`       // last commit of the original pool
-	PoolSize int              `json:"pool_size"` // how many originals were dissolved
-	Commits  []string         `json:"commits,omitempty"`
-	Groups   []ProposalGroup  `json:"groups"`
+	SHA      string          `json:"sha"`       // last commit of the original pool
+	PoolSize int             `json:"pool_size"` // how many originals were dissolved
+	Commits  []string        `json:"commits,omitempty"`
+	Groups   []ProposalGroup `json:"groups"`
 }
 
 // ProposalGroup is one virtual commit in a proposal.
@@ -174,7 +174,7 @@ func NewReview(opts ReviewOptions) ReviewModel {
 			})
 		}
 	}
-	vp := viewport.New(40, 10)
+	vp := viewport.New(viewport.WithWidth(40), viewport.WithHeight(10))
 	return ReviewModel{
 		pools:     opts.Pools,
 		rows:      rows,
@@ -372,7 +372,7 @@ func (m ReviewModel) handleKey(msg tea.KeyMsg) (ReviewModel, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, m.keys.Up):
 		if m.focus == 1 {
-			m.diff.LineUp(1)
+			m.diff.ScrollUp(1)
 			return m, nil
 		}
 		if m.cursor > 0 {
@@ -380,7 +380,7 @@ func (m ReviewModel) handleKey(msg tea.KeyMsg) (ReviewModel, tea.Cmd) {
 		}
 	case key.Matches(msg, m.keys.Down):
 		if m.focus == 1 {
-			m.diff.LineDown(1)
+			m.diff.ScrollDown(1)
 			return m, nil
 		}
 		if m.cursor < len(m.rows)-1 {
@@ -388,12 +388,12 @@ func (m ReviewModel) handleKey(msg tea.KeyMsg) (ReviewModel, tea.Cmd) {
 		}
 	case key.Matches(msg, m.keys.PageUp):
 		if m.focus == 1 {
-			m.diff.HalfViewUp()
+			m.diff.HalfPageUp()
 			return m, nil
 		}
 	case key.Matches(msg, m.keys.PageDown):
 		if m.focus == 1 {
-			m.diff.HalfViewDown()
+			m.diff.HalfPageDown()
 			return m, nil
 		}
 	case key.Matches(msg, m.keys.Top):
@@ -646,7 +646,11 @@ func stripCommentLines(s string) string {
 }
 
 // View implements tea.Model.
-func (m ReviewModel) View() string {
+func (m ReviewModel) View() tea.View {
+	return newTerminalView(m.renderView())
+}
+
+func (m ReviewModel) renderView() string {
 	if m.width == 0 || m.height == 0 {
 		return "loading…"
 	}
@@ -836,11 +840,12 @@ func (m ReviewModel) renderRowDetail(width, height int) string {
 	if diffH < 3 {
 		diffH = 3
 	}
-	m.diff.Height = diffH
-	m.diff.Width = width - 4
-	if m.diff.Width < 10 {
-		m.diff.Width = 10
+	m.diff.SetHeight(diffH)
+	diffW := width - 4
+	if diffW < 10 {
+		diffW = 10
 	}
+	m.diff.SetWidth(diffW)
 	return header + m.diff.View()
 }
 

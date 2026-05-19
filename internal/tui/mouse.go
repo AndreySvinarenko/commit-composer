@@ -1,6 +1,6 @@
 package tui
 
-import tea "github.com/charmbracelet/bubbletea"
+import tea "charm.land/bubbletea/v2"
 
 // mouseZone tags a region of the screen so click/wheel events can be routed
 // to the right action without re-computing layout math everywhere.
@@ -41,41 +41,45 @@ func (m Model) hitZone(x, y int) mouseZone {
 // handleMouse routes a mouse event in the main TUI. Returns the updated model
 // + an optional command (typically a diff load on cursor jump).
 func (m Model) handleMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
-	zone := m.hitZone(msg.X, msg.Y)
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		switch zone {
-		case zoneRight:
-			m.diff.LineUp(3)
-		case zoneLeft:
-			if m.cursor > 0 {
-				m.cursor--
-				m.ensureCursorVisible()
-				m.resetDiffViewport()
+	mouse := msg.Mouse()
+	zone := m.hitZone(mouse.X, mouse.Y)
+	switch msg.(type) {
+	case tea.MouseWheelMsg:
+		switch mouse.Button {
+		case tea.MouseWheelUp:
+			switch zone {
+			case zoneRight:
+				m.diff.ScrollUp(3)
+			case zoneLeft:
+				if m.cursor > 0 {
+					m.cursor--
+					m.ensureCursorVisible()
+					m.resetDiffViewport()
+				}
+				return m, m.loadCommitCmd()
 			}
-			return m, m.loadCommitCmd()
-		}
-	case tea.MouseButtonWheelDown:
-		switch zone {
-		case zoneRight:
-			m.diff.LineDown(3)
-		case zoneLeft:
-			if m.cursor < len(m.rows)-1 {
-				m.cursor++
-				m.ensureCursorVisible()
-				m.resetDiffViewport()
+		case tea.MouseWheelDown:
+			switch zone {
+			case zoneRight:
+				m.diff.ScrollDown(3)
+			case zoneLeft:
+				if m.cursor < len(m.rows)-1 {
+					m.cursor++
+					m.ensureCursorVisible()
+					m.resetDiffViewport()
+				}
+				return m, m.loadCommitCmd()
 			}
-			return m, m.loadCommitCmd()
 		}
-	case tea.MouseButtonLeft:
-		if msg.Action != tea.MouseActionPress {
+	case tea.MouseClickMsg:
+		if mouse.Button != tea.MouseLeft {
 			return m, nil
 		}
 		switch zone {
 		case zoneLeft:
 			m.focus = 0
 			// Pane has border row 0, title row 1; content rows start at y=2.
-			rowOffset := msg.Y - 2
+			rowOffset := mouse.Y - 2
 			if rowOffset >= 0 {
 				first, _ := m.listWindow()
 				idx := first + rowOffset
@@ -120,30 +124,34 @@ func (m ReviewModel) hitZone(x, y int) mouseZone {
 
 // handleMouse routes a mouse event in the review TUI.
 func (m ReviewModel) handleMouse(msg tea.MouseMsg) (ReviewModel, tea.Cmd) {
-	zone := m.hitZone(msg.X, msg.Y)
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		switch zone {
-		case zoneRight:
-			m.diff.LineUp(3)
-		case zoneLeft:
-			if m.cursor > 0 {
-				m.cursor--
+	mouse := msg.Mouse()
+	zone := m.hitZone(mouse.X, mouse.Y)
+	switch msg.(type) {
+	case tea.MouseWheelMsg:
+		switch mouse.Button {
+		case tea.MouseWheelUp:
+			switch zone {
+			case zoneRight:
+				m.diff.ScrollUp(3)
+			case zoneLeft:
+				if m.cursor > 0 {
+					m.cursor--
+				}
+				return m, m.maybeLoadDiff()
 			}
-			return m, m.maybeLoadDiff()
-		}
-	case tea.MouseButtonWheelDown:
-		switch zone {
-		case zoneRight:
-			m.diff.LineDown(3)
-		case zoneLeft:
-			if m.cursor < len(m.rows)-1 {
-				m.cursor++
+		case tea.MouseWheelDown:
+			switch zone {
+			case zoneRight:
+				m.diff.ScrollDown(3)
+			case zoneLeft:
+				if m.cursor < len(m.rows)-1 {
+					m.cursor++
+				}
+				return m, m.maybeLoadDiff()
 			}
-			return m, m.maybeLoadDiff()
 		}
-	case tea.MouseButtonLeft:
-		if msg.Action != tea.MouseActionPress {
+	case tea.MouseClickMsg:
+		if mouse.Button != tea.MouseLeft {
 			return m, nil
 		}
 		switch zone {
@@ -151,7 +159,7 @@ func (m ReviewModel) handleMouse(msg tea.MouseMsg) (ReviewModel, tea.Cmd) {
 			m.focus = 0
 			// We render: title (1) + per-pool { blank (1) + header (1) + rule (1) + rows... }.
 			// Build a row map so clicks land on the right reviewRow index.
-			content := msg.Y - 2 // border + title
+			content := mouse.Y - 2 // border + title
 			if content < 0 {
 				return m, nil
 			}

@@ -22,10 +22,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/mrcat71/commit-composer/internal/git"
 	"github.com/mrcat71/commit-composer/internal/plan"
 	"github.com/mrcat71/commit-composer/internal/tui"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // Build-time metadata populated by goreleaser via ldflags:
@@ -77,14 +77,14 @@ func main() {
 	}
 
 	var (
-		flagOutput     = flag.String("output", "", "write the structured plan to this file instead of stdout")
-		flagApply      = flag.Bool("apply", false, "apply a previously-emitted plan via git rebase -i")
-		flagPlanFile   = flag.String("plan", "", "path to a plan file (used with --apply)")
-		flagSplitsDir  = flag.String("splits", "", "directory containing <sha>.split.json files for claude-split ops (used with --apply)")
-		flagDir        = flag.String("C", "", "run as if commit-composer was started in <path>")
-		flagVersion    = flag.Bool("version", false, "print version and exit")
-		flagNoColor    = flag.Bool("no-color", false, "disable color output")
-		flagListOnly   = flag.Bool("list", false, "print resolved commits and exit (no TUI)")
+		flagOutput    = flag.String("output", "", "write the structured plan to this file instead of stdout")
+		flagApply     = flag.Bool("apply", false, "apply a previously-emitted plan via git rebase -i")
+		flagPlanFile  = flag.String("plan", "", "path to a plan file (used with --apply)")
+		flagSplitsDir = flag.String("splits", "", "directory containing <sha>.split.json files for claude-split ops (used with --apply)")
+		flagDir       = flag.String("C", "", "run as if commit-composer was started in <path>")
+		flagVersion   = flag.Bool("version", false, "print version and exit")
+		flagNoColor   = flag.Bool("no-color", false, "disable color output")
+		flagListOnly  = flag.Bool("list", false, "print resolved commits and exit (no TUI)")
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [flags] [<range>]\n\n", filepath.Base(os.Args[0]))
@@ -179,7 +179,7 @@ func runTUI(ctx context.Context, repo git.Repo, rangeArg, outputPath string, lis
 		IncludeUncommitted: !clean,
 	})
 
-	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr), tea.WithMouseCellMotion())
+	prog := tea.NewProgram(m, tea.WithOutput(os.Stderr))
 	final, err := prog.Run()
 	if err != nil {
 		return fmt.Errorf("tui: %w", err)
@@ -459,10 +459,11 @@ func writeHunksFile(path, diff string) error {
 // to disk and prints a summary JSON outcome.
 //
 // The summary tells the slash command:
-//   accept: true if Enter pressed, false on q/esc
-//   has_comments: true if any group has a non-empty comment
-//   groups_changed: true if the user edited groups (reword/squash/drop)
-//   pools: the revised proposal in full
+//
+//	accept: true if Enter pressed, false on q/esc
+//	has_comments: true if any group has a non-empty comment
+//	groups_changed: true if the user edited groups (reword/squash/drop)
+//	pools: the revised proposal in full
 func reviewProposalMain(args []string) error {
 	fs := flag.NewFlagSet("__review-proposal", flag.ContinueOnError)
 	splitsDir := fs.String("splits", "", "directory with <sha>.split.json proposal files")
@@ -508,7 +509,7 @@ func reviewProposalMain(args []string) error {
 	}
 
 	m := tui.NewReview(tui.ReviewOptions{Pools: pools, RepoDir: *repoDir, LoadDiff: loadDiff})
-	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr), tea.WithMouseCellMotion())
+	prog := tea.NewProgram(m, tea.WithOutput(os.Stderr))
 	final, err := prog.Run()
 	if err != nil {
 		return fmt.Errorf("review tui: %w", err)
@@ -682,4 +683,3 @@ func selfPath() (string, error) {
 	}
 	return resolved, nil
 }
-

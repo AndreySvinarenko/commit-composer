@@ -6,10 +6,10 @@
 package tui
 
 import (
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"github.com/mrcat71/commit-composer/internal/git"
 	"github.com/mrcat71/commit-composer/internal/plan"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // row pairs a commit with its current Action and the index it occupied when
@@ -62,8 +62,8 @@ type Model struct {
 	filesCache map[string][]git.FileStat
 
 	// Plan metadata (base + range) carried through to the emitted Plan.
-	base       string
-	rangeSpec  string
+	base      string
+	rangeSpec string
 
 	// Cancelled is true when the user pressed q / esc / ctrl+c.
 	cancelled bool
@@ -131,7 +131,7 @@ func New(opts Options) Model {
 		}
 		rows = append([]row{uncommitted}, rows...)
 	}
-	vp := viewport.New(40, 10) // resized on first WindowSizeMsg
+	vp := viewport.New(viewport.WithWidth(40), viewport.WithHeight(10)) // resized on first WindowSizeMsg
 	return Model{
 		rows:       rows,
 		diff:       vp,
@@ -159,7 +159,7 @@ func (m Model) Init() tea.Cmd {
 // have to special-case a no-op WORKING entry.
 func (m Model) Plan() plan.Plan {
 	type pending struct {
-		op       plan.Op
+		op        plan.Op
 		isWorking bool
 	}
 	var keep []pending

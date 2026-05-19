@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/mrcat71/commit-composer/internal/git"
 	"github.com/mrcat71/commit-composer/internal/tui"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func main() {
@@ -29,7 +29,7 @@ func main() {
 			}, nil
 		}})
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 50})
-	out := mm.View()
+	out := mm.View().Content
 	// Strip ANSI for legibility.
 	stripped := strip(out)
 	lines := strings.Split(stripped, "\n")

@@ -6,10 +6,10 @@ import (
 	"os/exec"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"github.com/mrcat71/commit-composer/internal/git"
 	"github.com/mrcat71/commit-composer/internal/plan"
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // filesLoadedMsg is dispatched when an async file-list load finishes. The
@@ -97,9 +97,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	var cmd tea.Cmd
-	m.diff, cmd = m.diff.Update(msg)
-	return m, cmd
+	return m, nil
 }
 
 // isWorkingRow reports whether the row at the given index is the synthetic
@@ -165,18 +163,20 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) Model {
 	// and message length. Set a conservative default here so initial layout
 	// works before the first render.
 	_, right := m.paneWidths()
-	m.diff.Width = right - 4
-	if m.diff.Width < 10 {
-		m.diff.Width = 10
+	diffW := right - 4
+	if diffW < 10 {
+		diffW = 10
 	}
+	m.diff.SetWidth(diffW)
 	available := m.bodyHeight() - 2
 	if available < 5 {
 		available = 5
 	}
-	m.diff.Height = available / 2
-	if m.diff.Height < 3 {
-		m.diff.Height = 3
+	diffH := available / 2
+	if diffH < 3 {
+		diffH = 3
 	}
+	m.diff.SetHeight(diffH)
 	return m
 }
 
@@ -222,7 +222,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.Up):
 		if m.focus == 1 {
-			m.diff.LineUp(1)
+			m.diff.ScrollUp(1)
 			return m, nil
 		}
 		if m.cursor > 0 {
@@ -233,7 +233,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, m.loadCommitCmd()
 	case key.Matches(msg, m.keys.Down):
 		if m.focus == 1 {
-			m.diff.LineDown(1)
+			m.diff.ScrollDown(1)
 			return m, nil
 		}
 		if m.cursor < len(m.rows)-1 {
@@ -311,16 +311,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.cycleAction(), nil
 
 	case key.Matches(msg, m.keys.ScrollUp):
-		m.diff.LineUp(1)
+		m.diff.ScrollUp(1)
 		return m, nil
 	case key.Matches(msg, m.keys.ScrollDown):
-		m.diff.LineDown(1)
+		m.diff.ScrollDown(1)
 		return m, nil
 	case key.Matches(msg, m.keys.PageUp):
 		// PageUp routes by focus: scroll the diff when focused on the right,
 		// otherwise scroll the commit list by a page.
 		if m.focus == 1 {
-			m.diff.HalfViewUp()
+			m.diff.HalfPageUp()
 			return m, nil
 		}
 		page := m.listViewportHeight()
@@ -336,7 +336,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, m.loadCommitCmd()
 	case key.Matches(msg, m.keys.PageDown):
 		if m.focus == 1 {
-			m.diff.HalfViewDown()
+			m.diff.HalfPageDown()
 			return m, nil
 		}
 		page := m.listViewportHeight()

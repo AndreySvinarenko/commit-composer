@@ -7,10 +7,11 @@ import (
 	"strings"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mrcat71/commit-composer/internal/git"
 	"github.com/mrcat71/commit-composer/internal/plan"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 )
 
 const (
@@ -19,7 +20,18 @@ const (
 )
 
 // View implements tea.Model.
-func (m Model) View() string {
+func (m Model) View() tea.View {
+	return newTerminalView(m.renderView())
+}
+
+func newTerminalView(content string) tea.View {
+	v := tea.NewView(content)
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+func (m Model) renderView() string {
 	if m.width == 0 || m.height == 0 {
 		return "loading…"
 	}
@@ -135,6 +147,7 @@ func (m Model) bodyHeight() int {
 // the inner content area is bodyHeight - 2. Inside that area we reserve:
 //   - 1 line for the title
 //   - up to 1 line for the "↓ N more" scroll-down indicator
+//
 // (The "↑ N more" indicator goes on the title line, so it doesn't cost an
 // extra line.)
 //
@@ -374,14 +387,14 @@ func (m Model) renderDetails(width int) string {
 	if diffH < 3 {
 		diffH = 3
 	}
-	// Mutate the viewport's height for THIS render. The receiver is a value
-	// but viewport.Model has its own internal pointer state, so resizing
-	// here is fine for display purposes.
-	m.diff.Height = diffH
-	m.diff.Width = width - 4
-	if m.diff.Width < 10 {
-		m.diff.Width = 10
+	// Mutate the viewport size for this render. The receiver is a value, so
+	// this only affects the display copy.
+	m.diff.SetHeight(diffH)
+	diffW := width - 4
+	if diffW < 10 {
+		diffW = 10
 	}
+	m.diff.SetWidth(diffW)
 
 	return headerStr + m.diff.View()
 }

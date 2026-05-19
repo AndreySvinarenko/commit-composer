@@ -4,19 +4,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 )
 
-// forceTrueColor forces lipgloss to emit SGR codes during tests. Without
-// it, lipgloss detects a non-TTY stdout and strips all styling, which
-// hides the very ANSI-handling behavior we want to exercise.
+// forceTrueColor is kept as a test helper for the v1 -> v2 migration. Lip
+// Gloss v2 Render always emits full-fidelity ANSI, so there is nothing to set.
 func forceTrueColor(t *testing.T) {
 	t.Helper()
-	prev := lipgloss.DefaultRenderer().ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 }
 
 // TestPasteAtPreservesANSI ensures pasteAt never cuts through an ANSI

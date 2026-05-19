@@ -1,6 +1,6 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import "charm.land/lipgloss/v2"
 
 // styles bundles all lipgloss styles used by the TUI. Centralized so theming
 // changes are a single edit. All values derive from the Theme palette.
@@ -51,7 +51,7 @@ func newStyles() styles {
 
 func newStylesFromTheme(t Theme) styles {
 	border := lipgloss.RoundedBorder()
-	color := func(hex string) lipgloss.Color { return lipgloss.Color(hex) }
+	color := lipgloss.Color
 	return styles{
 		theme: t,
 		pane: lipgloss.NewStyle().
