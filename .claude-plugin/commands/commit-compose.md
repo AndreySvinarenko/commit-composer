@@ -57,6 +57,13 @@ diagnostic bash commands (env dumps, version checks, list-clients,
 etc.). Do NOT narrate "let me check ...". Run **exactly one** bash
 block to do pre-flight + launch, in this order:
 
+**Token rule:** treat large artifacts as last-resort context. The full
+pool diff can be thousands of lines; reading it always is expensive
+and rarely necessary. Step 2 spells out when to read it and when not.
+Do NOT re-verify the apply with `go build` / test suites - the binary
+already asserts the working tree is clean. Do NOT grep the binary's
+source to confirm its semantics; trust the documented behaviour below.
+
 ```bash
 set -e
 git rev-parse --git-dir >/dev/null 2>&1 || { echo "not in a git repository" >&2; exit 1; }
@@ -103,6 +110,11 @@ proposing groups: `__split-prepare` writes the diff to
 `$SPLITS_DIR/WORKING.split.json` with `"sha": "WORKING"` and `"pool_size": 0`
 (0 marks "not a commit pool - just commit on top of HEAD").
 
+The review TUI may rewrite `pool_size` to 1 in the accepted JSON; ignore
+that. The binary's WORKING code path (`executeUncommittedRecompose`)
+never reads `pool_size` - it only does `git reset` (index, not HEAD)
+followed by per-group `git add` + `git commit`. No history is touched.
+
 Applying a WORKING op stages + commits each group on top of HEAD without
 running rebase, so it cannot conflict with existing history. If the plan
 also has commit-level claude-recompose ops, the binary will stash the
@@ -131,9 +143,17 @@ step 0):
 - `$SPLITS_DIR/manifest.json` - structured list of pools with
   `last_sha`, `pool_size`, `commits`, file paths
 
-For each pool, read the diff and the commit list, then **propose
-groups**. Group files **by feature / logical topic**, not mechanically
-by file. The output you must produce is a JSON file at
+For each pool, **start with `<lastSHA>.files.txt` and `<lastSHA>.commits.txt`** -
+the file paths and commit subjects are usually enough to decide grouping
+(a deps bump, a refactor concentrated in one module, a docs-only change,
+etc.). **Only read `<lastSHA>.diff`** when the grouping requires
+inspecting *what* changed - e.g. one file mixes two concerns and you
+need to know if hunks can be split, or filenames don't make the topical
+boundary obvious. The diff can be thousands of lines; reading it
+defensively is the single biggest token sink in this workflow.
+
+Then **propose groups**. Group files **by feature / logical topic**,
+not mechanically by file. The output you must produce is a JSON file at
 `$SPLITS_DIR/<lastSHA>.split.json` with this shape:
 
 ```json
