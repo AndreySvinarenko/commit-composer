@@ -11,9 +11,9 @@ UX target: same feel as umputun's `revdiff` (https://github.com/umputun/revdiff)
    - How the Go binary signals completion back to the parent Claude slash command (stdout? temp file? named pipe?)
    - Terminal auto-detect snippet (tmux > Zellij > kitty > wezterm > ...) - copy under MIT
 2. Verify latest stable versions of:
-   - `github.com/charmbracelet/bubbletea`
-   - `github.com/charmbracelet/lipgloss`
-   - `github.com/charmbracelet/bubbles`
+   - `charm.land/bubbletea/v2`
+   - `charm.land/lipgloss/v2`
+   - `charm.land/bubbles/v2`
    - Claude Code plugin spec at https://code.claude.com/docs/en/discover-plugins.md
 3. Confirm the IPC pattern revdiff uses; mirror it exactly. Do not invent a new contract.
 
@@ -184,4 +184,5 @@ The slash command markdown file should follow revdiff's structure exactly - same
 - revdiff docs: https://revdiff.com/docs
 - Claude Code plugin docs: https://code.claude.com/docs/en/discover-plugins.md
 - Bubble Tea: https://github.com/charmbracelet/bubbletea
+- Charm module paths: https://charm.land
 - Git rebase todo format: `man git-rebase` (section "INTERACTIVE MODE")
