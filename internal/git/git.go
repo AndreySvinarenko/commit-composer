@@ -23,6 +23,15 @@ import (
 // TUI from blowing up. Practically unlimited for typical user repos.
 const maxDefaultDepth = 5000
 
+// minUpstreamCommitsForDefault is the minimum commits-ahead of upstream
+// needed before ResolveRange uses upstream..HEAD as the default range.
+//
+// Below this threshold (e.g. right after pulling a merged PR, when you have
+// 0 or 1 local follow-up commits), upstream..HEAD shows a TUI with too
+// little context to be useful - so we fall through to the recent-N window
+// instead. The user can always pass an explicit range to override.
+const minUpstreamCommitsForDefault = 2
+
 // UncommittedSHA is the sentinel "SHA" used for the synthetic virtual row
 // that represents staged + unstaged + untracked changes in the working
 // tree. It's intentionally not a valid hex SHA so it can't collide with a
@@ -128,8 +137,9 @@ func (r Repo) UpstreamRange(ctx context.Context) (string, error) {
 //
 //	"<rev>"           -> "<rev>..HEAD"            (e.g. "HEAD~10")
 //	"<base>..<head>"  -> as given (both sides resolved to full SHAs)
-//	""                -> upstream..HEAD if available AND non-empty,
-//	                     else HEAD~N..HEAD where N = min(10, count-1).
+//	""                -> upstream..HEAD if it has >= minUpstreamCommitsForDefault
+//	                     commits, else HEAD~N..HEAD where N is the first-parent
+//	                     depth of HEAD (capped by maxDefaultDepth).
 //	                     For a single-commit repo, returns base="" (the
 //	                     empty-tree sentinel) + head=HEAD so the initial
 //	                     commit can be edited too.
@@ -137,10 +147,13 @@ func (r Repo) UpstreamRange(ctx context.Context) (string, error) {
 func (r Repo) ResolveRange(ctx context.Context, spec string) (base, head string, rangeSpec string, err error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
-		// First try upstream..HEAD if it's non-empty (i.e., branch has
-		// commits ahead of upstream).
+		// Try upstream..HEAD if the branch is ahead of upstream by at
+		// least minUpstreamCommitsForDefault commits. The threshold avoids
+		// the "I just merged a PR and have one tiny follow-up commit"
+		// case where upstream..HEAD shows a single-row TUI with no useful
+		// context to compare against.
 		if up, _ := r.UpstreamRange(ctx); up != "" {
-			if cnt, _ := r.commitCount(ctx, up); cnt > 0 {
+			if cnt, _ := r.commitCount(ctx, up); cnt >= minUpstreamCommitsForDefault {
 				spec = up
 			}
 		}

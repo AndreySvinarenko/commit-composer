@@ -264,6 +264,41 @@ func TestResolveRangeSyncedBranch(t *testing.T) {
 	}
 }
 
+// TestResolveRangeJustAheadOfUpstream covers the post-PR-merge case: the
+// branch tracks an upstream and is ahead by only one commit. We want the
+// default range to expand to the recent-N window for context rather than
+// hand the user a single-row TUI. See minUpstreamCommitsForDefault.
+func TestResolveRangeJustAheadOfUpstream(t *testing.T) {
+	r := testRepo(t, 5)
+	ctx := context.Background()
+	// Point the fake upstream one commit behind HEAD so cnt(upstream..HEAD) == 1.
+	if _, err := r.Run(ctx, "update-ref", "refs/remotes/origin/main", "HEAD~1"); err != nil {
+		t.Fatalf("update-ref: %v", err)
+	}
+	if _, err := r.Run(ctx, "config", "branch.main.remote", "origin"); err != nil {
+		t.Fatalf("config branch.main.remote: %v", err)
+	}
+	if _, err := r.Run(ctx, "config", "branch.main.merge", "refs/heads/main"); err != nil {
+		t.Fatalf("config branch.main.merge: %v", err)
+	}
+	base, head, rs, err := r.ResolveRange(ctx, "")
+	if err != nil {
+		t.Fatalf("ResolveRange: %v", err)
+	}
+	commits, err := r.Log(ctx, base, head)
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	// We should have fallen back to HEAD~4..HEAD (4 commits), NOT
+	// upstream..HEAD (which would have given 1).
+	if len(commits) != 4 {
+		t.Fatalf("expected fallback to HEAD~4..HEAD (4 commits), got %d (rs=%s)", len(commits), rs)
+	}
+	if strings.Contains(rs, "origin/") {
+		t.Fatalf("expected fallback range, got upstream-based range %q", rs)
+	}
+}
+
 func TestLogOrderAndFields(t *testing.T) {
 	r := testRepo(t, 4) // need a parent for HEAD~3
 	ctx := context.Background()
