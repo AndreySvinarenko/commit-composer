@@ -109,7 +109,7 @@ k / ↑         cursor up
 J             move highlighted commit DOWN
 K             move highlighted commit UP
 p             pick
-r             reword  (opens $EDITOR)
+r             reword  (choose: [e] $EDITOR  [c] ask Claude)
 s             squash  (fold into previous, keep both messages)
 f             fixup   (fold into previous, drop this message)
 d             drop
@@ -141,6 +141,34 @@ if any) and offers three options:
   commit") - Claude revises the proposal and asks again
 - `n` cancel
 
+### claude-reword
+
+Pressing `r` opens an inline chooser:
+
+- `e` edit the message in `$EDITOR` (the existing manual flow)
+- `c` ask Claude to propose a new message
+- `esc` cancel
+
+If you pick `c`, the commit is marked `claude-reword` in the plan.
+After you confirm the TUI, the slash command extracts the current
+message plus the commit diff, asks Claude to draft a replacement under
+the project's commit-message rules, and opens `$EDITOR` per commit with
+the proposal pre-filled so you can review or edit before it lands.
+The final, user-approved message is what ends up in the rewritten
+history.
+
+### Commit-message style
+
+`claude-recompose` and `claude-reword` both produce Conventional
+Commits (`<type>(<scope>): <summary>`). The scope is required when one
+is clear and should describe the affected feature/module/service/
+chart/role/package rather than the implementation technology (so
+`feat(gitlab-access-token): ...` rather than `feat(terraform): ...`).
+The full ruleset lives in
+[`.claude-plugin/commands/commit-compose.md`](.claude-plugin/commands/commit-compose.md)
+under "Commit-message rules"; the binary has no validator, so the
+rules are enforced by Claude's prompt and your `$EDITOR` review pass.
+
 ## Plan format
 
 The binary emits a line-based v1 plan:
@@ -170,6 +198,14 @@ consecutive marked commits form a pool:
 - claude-recompose 1234567
 - claude-recompose 89abcde
 - claude-recompose fedcba0
+```
+
+`claude-reword` ops are per-commit and likewise carry no message in the
+plan line emitted by the TUI - the slash command fills the message in
+before apply by rewriting these lines to regular `reword` ops:
+
+```
+- claude-reword 1234567
 ```
 
 The actual split decisions (file groups + new commit messages) live in

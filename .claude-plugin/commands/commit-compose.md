@@ -15,6 +15,99 @@ plan; you then pre-analyse `claude-recompose` commits and open the
 commits visually. After the user accepts in the TUI, apply via
 `git rebase -i`.
 
+## Commit-message rules (applies to claude-recompose AND claude-reword)
+
+Every commit message you propose - whether for a claude-recompose group
+or a claude-reword commit - MUST follow these rules. The reword and
+recompose flows are the two surfaces where you get to write commit
+messages; treat both consistently.
+
+### Format
+
+Use Conventional Commits:
+
+```
+<type>(<scope>): <summary>
+```
+
+For a breaking change, add `!` before the colon: `<type>(<scope>)!: <summary>`.
+
+### Allowed types
+
+`feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `ci`, `build`,
+`perf`, `revert`.
+
+### Scope (this is the load-bearing part)
+
+- Always include a scope when one is clear.
+- Scope describes the **affected project, module, feature, directory,
+  service, chart, role, package, or functional area** - what the change
+  is about, not how it is implemented.
+- Scope should NOT describe only the implementation technology unless
+  the change is about the technology itself, its shared configuration,
+  tooling, or repository-wide setup.
+- Avoid generic technology scopes such as `terraform`, `opentofu`,
+  `helm`, `k8s`, `kubernetes`, `yaml`, `go`, `python`, `shell`.
+
+When the technology IS the area being changed, technology scopes are
+fine:
+
+- `chore(helm): update chart testing config`
+- `fix(k8s): correct shared namespace labels`
+- `chore(terraform): update provider constraints`
+
+When the change is about a specific module/chart/service, scope by
+that thing, not by the underlying technology:
+
+- For Terraform/OpenTofu: prefer module / resource area / product /
+  environment / directory name.
+  - `feat(gitlab-access-token): add project access token resource`
+  - NOT `feat(terraform): add project access token resource`
+- For Helm: prefer the chart / application / service / component name.
+  - `fix(prometheus): update external secret template`
+  - NOT `fix(helm): update external secret template`
+- For Kubernetes manifests: prefer the app / namespace / controller /
+  operator / workload / platform area.
+  - `feat(opensearch): add event log index template`
+  - `fix(ingress): correct external traffic policy`
+  - NOT `feat(k8s): add event log index template`
+- For CI/CD: prefer the pipeline / job / tool / repo / affected project.
+  - `ci(gitlab-access-token): add terraform validation job`
+  - `ci(renovate): add module update rules`
+
+If several files use the same technology but belong to one
+feature/module, scope by that feature/module. If a change spans
+multiple unrelated areas, use a broader repository / platform / domain
+scope, or omit the scope only when no clear scope exists.
+
+Scope must be short, lowercase, and kebab-case when it contains
+multiple words. Examples: `gitlab-access-token`, `prometheus`,
+`opensearch`, `ingress`, `k8s-cluster`, `provider`, `backend`, `deps`,
+`ansible`, `brew`.
+
+### Subject line
+
+- Imperative mood: `add`, `update`, `switch`, `allow`, `make`,
+  `replace`, `harden`, `templatize`, `remove`, `drop`, `rename`.
+- Do not capitalize the first word after the colon.
+- Do not end the subject with a period.
+- Keep it concise and specific. Max 72 characters.
+
+### Dependency updates
+
+Use the shorthand:
+
+```
+chore(deps): update <dependency> to <version>
+```
+
+### Scope-selection cheatsheet
+
+When you are about to write a scope and find yourself reaching for
+`terraform`, `helm`, `k8s`, `kubernetes`, `yaml`, `go`, `python`, or
+`shell`: pause. Ask "what is this change ABOUT?" The answer is the
+scope - the technology is just the tool the change happens to use.
+
 ## ABSOLUTE RULE - read this before doing anything else
 
 **Do NOT print the plan, the proposed groups, file lists, or any
@@ -79,8 +172,10 @@ LAUNCHER="${CLAUDE_PLUGIN_DATA:+$CLAUDE_PLUGIN_DATA/scripts/launch-commit-compos
 
 PLAN_FILE="$(mktemp -t commit-composer-plan-XXXXXX)"
 SPLITS_DIR="$(mktemp -d -t commit-composer-splits-XXXXXX)"
+REWORDS_DIR="$(mktemp -d -t commit-composer-rewords-XXXXXX)"
 echo "PLAN_FILE=$PLAN_FILE"
 echo "SPLITS_DIR=$SPLITS_DIR"
+echo "REWORDS_DIR=$REWORDS_DIR"
 echo "BIN=$BIN"
 
 "$LAUNCHER" "$1" >"$PLAN_FILE"
@@ -184,10 +279,80 @@ Rules when proposing groups:
   documents a different concern, separate it.
 - **Every file the pool touches must be in exactly one group.** The
   binary rejects splits that leave the working tree dirty.
-- **Commit messages must be non-empty** and follow Conventional
-  Commits where it makes sense (feat/fix/docs/refactor/test/chore).
+- **Commit messages must be non-empty** and MUST follow the
+  **Commit-message rules** section at the top of this file. The scope
+  guidance is the load-bearing part - prefer feature/module/service/
+  chart scopes over generic technology scopes like `terraform`,
+  `helm`, `k8s`.
 - 1 group, same-count, or more-than-input - all valid. Pick what
   makes the new history readable.
+
+## 2c. If the plan has claude-reword ops, ask Claude to propose new messages
+
+Check whether any line in `$PLAN_FILE` starts with `- claude-reword`.
+If none, skip to step 3.
+
+`claude-reword` is the per-commit reword path: the user pressed `r` in
+the TUI and chose `c` (ask Claude). Each marked commit needs (a) a
+Claude-proposed message under the **Commit-message rules**, and (b) a
+user-review pass in `$EDITOR`. The existing manual reword path (which
+produces normal `- reword <sha> :: <msg>` lines) is unaffected.
+
+Prepare per-commit artifacts:
+
+```bash
+"$BIN" __reword-prepare --plan="$PLAN_FILE" --out="$REWORDS_DIR"
+```
+
+`__reword-prepare` writes for each claude-reword op:
+
+- `$REWORDS_DIR/<sha>.reword.msg.txt` - the current commit message
+- `$REWORDS_DIR/<sha>.reword.diff`    - the commit's unified diff
+- `$REWORDS_DIR/reword-manifest.json` - structured list of entries
+
+For each entry in `reword-manifest.json`:
+
+1. Read `<sha>.reword.msg.txt` and `<sha>.reword.diff`.
+2. Compose a new commit message that:
+   - Accurately reflects what the diff does.
+   - Follows the **Commit-message rules** section at the top of this
+     file (Conventional Commits format; explicit, non-generic scope;
+     imperative lowercase summary; no trailing period; kebab-case
+     scope when multi-word).
+3. Write the proposal to `$REWORDS_DIR/<sha>.reword.proposed.txt`.
+   Single line if the message is one-line; subject + blank line + body
+   if the original had a body and you preserved or extended it.
+
+Do NOT print proposals into chat. The user reviews them in `$EDITOR`,
+not in the conversation.
+
+Then, for each commit, open `$EDITOR` so the user can review and edit
+the proposal before it lands in the plan:
+
+```bash
+for f in "$REWORDS_DIR"/*.reword.proposed.txt; do
+  [ -e "$f" ] || continue
+  cp "$f" "${f%.proposed.txt}.draft.txt"
+  ${EDITOR:-vi} "${f%.proposed.txt}.draft.txt"
+  cp "${f%.proposed.txt}.draft.txt" "${f%.proposed.txt}.final.txt"
+done
+```
+
+If the user empties a file, `__reword-apply` will error in the next
+step - that's the signal that the user cancelled that specific reword.
+Surface the error and stop; do not auto-fall-back to the original
+message.
+
+Finally, fold the accepted messages back into the plan:
+
+```bash
+"$BIN" __reword-apply --plan="$PLAN_FILE" --rewords-dir="$REWORDS_DIR"
+```
+
+After this step, every `- claude-reword <sha>` line in `$PLAN_FILE` has
+been rewritten to `- reword <sha> :: <accepted-message>` (multi-line
+messages use the `b64::` encoding automatically). The apply step (5)
+then proceeds with regular reword ops only.
 
 ## 3. Brief protected-branch heads-up (one line)
 
@@ -295,6 +460,7 @@ suggested command.
 ```bash
 rm -f "$PLAN_FILE"
 rm -rf "$SPLITS_DIR"
+rm -rf "$REWORDS_DIR"
 ```
 
 Run cleanup on both success and cancellation.

@@ -56,7 +56,7 @@ func writeOp(b *strings.Builder, op Op) {
 	b.WriteString(op.Action.String())
 	b.WriteByte(' ')
 	b.WriteString(op.SHA)
-	if op.Action == Reword && op.NewMessage != "" {
+	if (op.Action == Reword || op.Action == ClaudeReword) && op.NewMessage != "" {
 		b.WriteString(rewordSep)
 		if strings.ContainsRune(op.NewMessage, '\n') {
 			b.WriteString(rewordB64Tag)
@@ -165,6 +165,20 @@ func parseOpLine(line string) (Op, error) {
 		// Backward-compat: accept and ignore a trailing granularity token
 		// from old "claude-split :: by-file" plans.
 		_ = tailContent
+	case ClaudeReword:
+		// The TUI emits claude-reword without trailing content. Tolerate a
+		// trailing message here so a hand-edited plan that pre-fills the
+		// proposal still round-trips; the slash command flow itself never
+		// writes one (it rewrites to a regular Reword op instead).
+		if strings.HasPrefix(tailContent, rewordB64Tag) {
+			decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(tailContent, rewordB64Tag))
+			if err != nil {
+				return Op{}, fmt.Errorf("op line %q: bad base64: %w", line, err)
+			}
+			op.NewMessage = string(decoded)
+		} else {
+			op.NewMessage = tailContent
+		}
 	default:
 		return Op{}, fmt.Errorf("op line %q: action %s does not take trailing content", line, op.Action)
 	}

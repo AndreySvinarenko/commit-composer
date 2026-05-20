@@ -3,9 +3,20 @@ package tui
 import (
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/mrcat71/commit-composer/internal/git"
 	"github.com/mrcat71/commit-composer/internal/plan"
 )
+
+// keyPress is a small helper that drives one key through the TUI's Update.
+// Most tests just want the resulting Model; the returned Cmd is ignored
+// unless the test specifically asserts on it.
+func keyPress(m Model, s string) Model {
+	msg := tea.KeyPressMsg{Text: s}
+	out, _ := m.Update(msg)
+	mm, _ := out.(Model)
+	return mm
+}
 
 func sampleCommits(n int) []git.Commit {
 	out := make([]git.Commit, n)
@@ -133,6 +144,76 @@ func TestValidate(t *testing.T) {
 				t.Fatal("expected error, got nil")
 			}
 		})
+	}
+}
+
+func TestRewordChooserOpensOnR(t *testing.T) {
+	m := New(Options{Commits: sampleCommits(2)})
+	m = keyPress(m, "r")
+	if !m.rewordChooser {
+		t.Fatal("expected rewordChooser=true after pressing r")
+	}
+	if m.status == "" {
+		t.Error("expected non-empty status hint while chooser is open")
+	}
+	if m.rows[m.cursor].action != plan.Pick {
+		t.Errorf("row action should still be Pick (chooser pending), got %v", m.rows[m.cursor].action)
+	}
+}
+
+func TestRewordChooserCMarksClaudeReword(t *testing.T) {
+	m := New(Options{Commits: sampleCommits(2)})
+	m = keyPress(m, "r")
+	m = keyPress(m, "c")
+	if m.rewordChooser {
+		t.Fatal("chooser should be closed after pressing c")
+	}
+	if m.rows[m.cursor].action != plan.ClaudeReword {
+		t.Errorf("row action: got %v want ClaudeReword", m.rows[m.cursor].action)
+	}
+	if m.rows[m.cursor].reword != "" {
+		t.Errorf("claude-reword path must not pre-fill reword; got %q", m.rows[m.cursor].reword)
+	}
+	if m.status == "" {
+		t.Error("expected confirmation status after claude-reword mark")
+	}
+}
+
+func TestRewordChooserQClosesWithoutChange(t *testing.T) {
+	m := New(Options{Commits: sampleCommits(2)})
+	m = keyPress(m, "r")
+	m = keyPress(m, "q") // also covers the esc branch
+	if m.rewordChooser {
+		t.Fatal("chooser should be closed after pressing q/esc")
+	}
+	if m.rows[m.cursor].action != plan.Pick {
+		t.Errorf("row action should stay Pick after cancelling chooser, got %v", m.rows[m.cursor].action)
+	}
+	if m.status != "" {
+		t.Errorf("status should be cleared after cancel, got %q", m.status)
+	}
+}
+
+func TestPlanEmitsClaudeReword(t *testing.T) {
+	m := New(Options{
+		Commits:   sampleCommits(2),
+		Base:      "deadbeef",
+		RangeSpec: "deadbeef..HEAD",
+	})
+	m = keyPress(m, "r")
+	m = keyPress(m, "c")
+	p := m.Plan()
+	var found bool
+	for _, op := range p.Ops {
+		if op.Action == plan.ClaudeReword {
+			found = true
+			if op.NewMessage != "" {
+				t.Errorf("claude-reword op should not carry NewMessage from the TUI; got %q", op.NewMessage)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("Plan() did not surface the claude-reword action")
 	}
 }
 

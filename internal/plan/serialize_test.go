@@ -6,7 +6,7 @@ import (
 )
 
 func TestActionStringRoundTrip(t *testing.T) {
-	cases := []Action{Pick, Reword, Squash, Fixup, Drop, Edit, ClaudeRecompose}
+	cases := []Action{Pick, Reword, Squash, Fixup, Drop, Edit, ClaudeRecompose, ClaudeReword}
 	for _, a := range cases {
 		t.Run(a.String(), func(t *testing.T) {
 			got, err := ParseAction(a.String())
@@ -89,6 +89,31 @@ func TestMarshalUnmarshalRoundTrip(t *testing.T) {
 					{SHA: "aaa", Action: ClaudeRecompose, OrigIndex: 0},
 					{SHA: "bbb", Action: ClaudeRecompose, OrigIndex: 1},
 					{SHA: "ccc", Action: ClaudeRecompose, OrigIndex: 2},
+				},
+			},
+		},
+		{
+			name: "claude-reword ops (no message attached)",
+			in: Plan{
+				Base: "0000000000000000000000000000000000000000",
+				Ops: []Op{
+					{SHA: "aaa", Action: Pick, OrigIndex: 0},
+					{SHA: "bbb", Action: ClaudeReword, OrigIndex: 1},
+					{SHA: "ccc", Action: ClaudeReword, OrigIndex: 2},
+				},
+			},
+		},
+		{
+			name: "claude-reword op with pre-filled message (round-trips through b64 if multiline)",
+			in: Plan{
+				Base: "0000000000000000000000000000000000000000",
+				Ops: []Op{
+					{
+						SHA:        "abc1234",
+						Action:     ClaudeReword,
+						NewMessage: "feat(scope): proposed line\n\nWith body.",
+						OrigIndex:  0,
+					},
 				},
 			},
 		},

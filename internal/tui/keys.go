@@ -59,7 +59,7 @@ func newKeymap() keymap {
 			key.WithHelp("J", "move down"),
 		),
 		Pick:            key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pick")),
-		Reword:          key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reword")),
+		Reword:          key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reword (manual / claude)")),
 		Squash:          key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "squash")),
 		Fixup:           key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "fixup")),
 		Drop:            key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "drop")),

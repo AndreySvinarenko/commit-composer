@@ -73,6 +73,18 @@ func main() {
 				os.Exit(2)
 			}
 			return
+		case "__reword-prepare":
+			if err := rewordPrepareMain(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "commit-composer:", err)
+				os.Exit(2)
+			}
+			return
+		case "__reword-apply":
+			if err := rewordApplyMain(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "commit-composer:", err)
+				os.Exit(2)
+			}
+			return
 		}
 	}
 
@@ -682,4 +694,164 @@ func selfPath() (string, error) {
 		return exe, nil
 	}
 	return resolved, nil
+}
+
+// rewordManifestEntry is one entry produced by __reword-prepare.
+type rewordManifestEntry struct {
+	SHA      string `json:"sha"`
+	Subject  string `json:"subject"`
+	MsgPath  string `json:"msg_path"`
+	DiffPath string `json:"diff_path"`
+}
+
+// rewordPrepareMain is invoked as `commit-composer __reword-prepare
+// --plan=FILE --out=DIR`. For each claude-reword op in the plan it writes:
+//
+//	<sha>.reword.msg.txt   - the commit's raw message (subject + body)
+//	<sha>.reword.diff      - the commit's unified diff
+//	reword-manifest.json   - structured list of entries the slash command iterates
+//
+// The slash command reads these, asks Claude to propose a new message under
+// the commit-message rules, writes <sha>.reword.proposed.txt, opens $EDITOR
+// for the user to review/edit, and finally writes <sha>.reword.final.txt.
+// `__reword-apply` then folds those final messages back into the plan.
+func rewordPrepareMain(args []string) error {
+	fs := flag.NewFlagSet("__reword-prepare", flag.ContinueOnError)
+	planPath := fs.String("plan", "", "path to plan file")
+	outDir := fs.String("out", "", "output directory for reword artifacts")
+	dir := fs.String("C", "", "run as if started in this directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *planPath == "" || *outDir == "" {
+		return errors.New("__reword-prepare: --plan and --out are required")
+	}
+	if err := os.MkdirAll(*outDir, 0o700); err != nil {
+		return fmt.Errorf("mkdir out: %w", err)
+	}
+	f, err := os.Open(*planPath)
+	if err != nil {
+		return fmt.Errorf("open plan: %w", err)
+	}
+	defer f.Close()
+	p, err := plan.Unmarshal(f)
+	if err != nil {
+		return fmt.Errorf("parse plan: %w", err)
+	}
+	repo := git.Repo{Dir: *dir}
+	ctx := context.Background()
+
+	var manifest []rewordManifestEntry
+	for _, op := range p.Ops {
+		if op.Action != plan.ClaudeReword {
+			continue
+		}
+		if git.IsUncommitted(op.SHA) {
+			return fmt.Errorf("__reword-prepare: claude-reword does not apply to the uncommitted row")
+		}
+		msgOut, mErr := repo.Run(ctx, "log", "-1", "--format=%B", op.SHA)
+		if mErr != nil {
+			return fmt.Errorf("read message for %s: %w", short(op.SHA), mErr)
+		}
+		msg := strings.TrimRight(msgOut, "\n")
+		diffOut, dErr := repo.Diff(ctx, op.SHA)
+		if dErr != nil {
+			return fmt.Errorf("diff %s: %w", short(op.SHA), dErr)
+		}
+		msgPath := filepath.Join(*outDir, op.SHA+".reword.msg.txt")
+		diffPath := filepath.Join(*outDir, op.SHA+".reword.diff")
+		if err := os.WriteFile(msgPath, []byte(msg+"\n"), 0o600); err != nil {
+			return fmt.Errorf("write message: %w", err)
+		}
+		if err := os.WriteFile(diffPath, []byte(diffOut), 0o600); err != nil {
+			return fmt.Errorf("write diff: %w", err)
+		}
+		subject := msg
+		if i := strings.IndexByte(msg, '\n'); i >= 0 {
+			subject = msg[:i]
+		}
+		manifest = append(manifest, rewordManifestEntry{
+			SHA:      op.SHA,
+			Subject:  subject,
+			MsgPath:  msgPath,
+			DiffPath: diffPath,
+		})
+	}
+
+	mb, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal manifest: %w", err)
+	}
+	manifestPath := filepath.Join(*outDir, "reword-manifest.json")
+	if err := os.WriteFile(manifestPath, mb, 0o600); err != nil {
+		return fmt.Errorf("write manifest: %w", err)
+	}
+	fmt.Println(manifestPath)
+	return nil
+}
+
+// rewordApplyMain is invoked as `commit-composer __reword-apply --plan=FILE
+// --rewords-dir=DIR`. For every claude-reword op in the plan it reads
+// DIR/<sha>.reword.final.txt and rewrites the op into a normal Reword op
+// carrying that message. The plan file is overwritten in place.
+//
+// If any claude-reword op is missing its .reword.final.txt the function
+// returns an error and leaves the plan untouched - silent fallbacks would
+// hide a half-finished reword pass.
+func rewordApplyMain(args []string) error {
+	fs := flag.NewFlagSet("__reword-apply", flag.ContinueOnError)
+	planPath := fs.String("plan", "", "path to plan file")
+	rewordsDir := fs.String("rewords-dir", "", "directory containing <sha>.reword.final.txt files")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *planPath == "" || *rewordsDir == "" {
+		return errors.New("__reword-apply: --plan and --rewords-dir are required")
+	}
+	f, err := os.Open(*planPath)
+	if err != nil {
+		return fmt.Errorf("open plan: %w", err)
+	}
+	p, err := plan.Unmarshal(f)
+	f.Close()
+	if err != nil {
+		return fmt.Errorf("parse plan: %w", err)
+	}
+	var missing []string
+	for i, op := range p.Ops {
+		if op.Action != plan.ClaudeReword {
+			continue
+		}
+		finalPath := filepath.Join(*rewordsDir, op.SHA+".reword.final.txt")
+		data, rErr := os.ReadFile(finalPath)
+		if rErr != nil {
+			missing = append(missing, op.SHA)
+			continue
+		}
+		msg := strings.TrimRight(string(data), "\n")
+		if strings.TrimSpace(msg) == "" {
+			missing = append(missing, op.SHA)
+			continue
+		}
+		p.Ops[i].Action = plan.Reword
+		p.Ops[i].NewMessage = msg
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("__reword-apply: missing or empty final message for %d commit(s): %s",
+			len(missing), strings.Join(missing, ", "))
+	}
+	out := plan.Marshal(p)
+	if err := os.WriteFile(*planPath, []byte(out), 0o600); err != nil {
+		return fmt.Errorf("write plan: %w", err)
+	}
+	return nil
+}
+
+// short abbreviates a SHA for log lines. Kept local to this file so we
+// don't collide with any short() helpers in subpackages.
+func short(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }

@@ -23,12 +23,22 @@ const (
 	// The proposal is reviewed (and optionally edited) before any
 	// rebase happens.
 	ClaudeRecompose
+	// ClaudeReword marks the commit for Claude-assisted rewording.
+	//
+	// The TUI emits these as bare `claude-reword <sha>` op lines (no
+	// trailing message). The slash command resolves them before the
+	// rebase: Claude proposes a new message from the current message +
+	// diff, the user reviews/edits in $EDITOR per commit, and a binary
+	// helper rewrites each ClaudeReword op into a regular Reword op
+	// carrying the accepted message. The apply layer therefore never
+	// sees ClaudeReword - it only ever sees Reword.
+	ClaudeReword
 )
 
 // NumActions reports the count of valid Action values. The TUI uses this to
 // drive the Space-cycle wraparound; keeping it here lets the enum stay the
 // single source of truth.
-func NumActions() int { return 7 }
+func NumActions() int { return 8 }
 
 // String returns the lowercase token used in the serialized plan.
 func (a Action) String() string {
@@ -47,6 +57,8 @@ func (a Action) String() string {
 		return "edit"
 	case ClaudeRecompose:
 		return "claude-recompose"
+	case ClaudeReword:
+		return "claude-reword"
 	default:
 		return fmt.Sprintf("action(%d)", int(a))
 	}
@@ -72,6 +84,8 @@ func ParseAction(s string) (Action, error) {
 	// Backward-compat with the previous "claude-split" token.
 	case "claude-split":
 		return ClaudeRecompose, nil
+	case "claude-reword":
+		return ClaudeReword, nil
 	default:
 		return 0, fmt.Errorf("unknown action %q", s)
 	}

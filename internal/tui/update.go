@@ -190,6 +190,43 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Reword chooser swallows all keys except its three choices. This is the
+	// inline prompt shown after pressing `r`: pick manual ($EDITOR) or
+	// Claude-assisted reword.
+	if m.rewordChooser {
+		switch msg.String() {
+		case "e":
+			m.rewordChooser = false
+			if len(m.rows) == 0 {
+				m.status = ""
+				return m, nil
+			}
+			r := m.rows[m.cursor]
+			initial := r.reword
+			if initial == "" {
+				initial = r.commit.Message()
+			}
+			m.status = ""
+			return m, rewordCmd(m.cursor, initial)
+		case "c":
+			m.rewordChooser = false
+			if len(m.rows) == 0 {
+				m.status = ""
+				return m, nil
+			}
+			m.rows[m.cursor].action = plan.ClaudeReword
+			m.rows[m.cursor].reword = ""
+			m.status = "marked for claude-reword (Claude proposes, you review)"
+			m.statusError = false
+			return m, nil
+		case "esc", "q":
+			m.rewordChooser = false
+			m.status = ""
+			return m, nil
+		}
+		return m, nil
+	}
+
 	switch {
 	case key.Matches(msg, m.keys.Cancel):
 		m.cancelled = true
@@ -300,12 +337,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if len(m.rows) == 0 {
 			return m, nil
 		}
-		r := m.rows[m.cursor]
-		initial := r.reword
-		if initial == "" {
-			initial = r.commit.Message()
+		if m.isWorkingRow(m.cursor) {
+			m.status = "uncommitted row cannot be reworded"
+			m.statusError = true
+			return m, nil
 		}
-		return m, rewordCmd(m.cursor, initial)
+		m.rewordChooser = true
+		m.status = "reword: [e] $EDITOR  [c] ask Claude  [esc] cancel"
+		m.statusError = false
+		return m, nil
 
 	case key.Matches(msg, m.keys.Cycle):
 		return m.cycleAction(), nil
@@ -379,6 +419,7 @@ var cycleOrder = []plan.Action{
 	plan.Pick,
 	plan.ClaudeRecompose,
 	plan.Reword,
+	plan.ClaudeReword,
 	plan.Squash,
 	plan.Fixup,
 	plan.Drop,

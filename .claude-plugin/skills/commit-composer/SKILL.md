@@ -21,6 +21,8 @@ re-implementing it.
 - "break up commit X into logical pieces"
 - "interactive rebase with a UI"
 - "let me pick which commits to keep"
+- "reword with Claude"
+- "have Claude rewrite my commit message"
 - "use commit composer / commit-composer"
 
 ## Workflow (be fast)

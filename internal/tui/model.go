@@ -71,6 +71,10 @@ type Model struct {
 	// Help overlay visible.
 	showHelp bool
 
+	// rewordChooser is true while the reword key handler is waiting for the
+	// user to pick between manual $EDITOR and claude-assisted reword.
+	rewordChooser bool
+
 	// Status line text (errors, hints).
 	status      string
 	statusError bool
